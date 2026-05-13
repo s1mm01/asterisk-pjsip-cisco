@@ -1,0 +1,169 @@
+; ----------------------------------------------------------------
+; Cisco feature-code dialplan for asterisk-pjsip-cisco
+; ----------------------------------------------------------------
+;
+; Hardware-button replacements for Cisco Enterprise SIP firmware
+; phones running on chan_pjsip. Cisco's Park / Conference / GPickUp
+; hardware buttons need CallManager-style server support that this
+; project deliberately does not ship; the feature codes below give
+; equivalent workflows via the standard Trnsfer softkey, on every
+; Cisco firmware version, with no per-phone reprovisioning.
+;
+; To use: paste this file into /etc/asterisk/extensions.conf (or
+; #include it), then either set
+;     context = cisco-features
+; on each Cisco endpoint in pjsip.conf, or add
+;     include => cisco-features
+; to the endpoint's existing dialplan context.
+;
+; ----------------------------------------------------------------
+; USER REFERENCE CARD — print and stick on the desk
+; ----------------------------------------------------------------
+;
+;   PARK A CALL
+;     During the call, press Trnsfer, dial 700, press Trnsfer again.
+;     The phone announces the parking slot (typically 701-720).
+;     Tell whoever you're handing the call to which slot to dial.
+;
+;   RETRIEVE A PARKED CALL
+;     Dial the slot number directly (e.g. 701).
+;     Calls auto-return to the parker after 45s if not retrieved.
+;
+;   PICK UP A RINGING PHONE NEAR YOU
+;     Dial *8. Picks up any ringing call in your pickup group.
+;     (Talk to your admin if your group isn't set up — see below.)
+;
+;   3-PARTY CONFERENCE — easy way (meet-me)
+;     1. Press Trnsfer, dial 8001, press Trnsfer again.
+;        The other party is now in conference 8001 alone, on hold.
+;     2. Tell anyone else who needs to join: "Dial 8001."
+;     3. Dial 8001 yourself to rejoin.
+;     Use 8002, 8003, ... if 8001 is in use.
+;
+;   3-PARTY CONFERENCE — chained-transfer way (CallManager-style)
+;     1. During the call, press Trnsfer, dial *0 followed by your
+;        own extension (e.g. *01010), press Trnsfer again.
+;        Your party is now alone in your personal conference.
+;     2. Press a free line on your phone, dial the third party.
+;     3. When they answer, press Trnsfer, dial *0 + your extension
+;        again, press Trnsfer again.
+;     All three of you are now bridged.
+;
+;   SEE WHO'S IN A CONFERENCE
+;     During a conference call, press the ConfList softkey on the
+;     phone. The screen shows everyone in the bridge — names if
+;     known, numbers otherwise. (Phase 1: read-only — Mute/Remove
+;     softkeys on the menu are not yet implemented.)
+;
+; ----------------------------------------------------------------
+; OPERATOR / ADMIN SECTION
+; ----------------------------------------------------------------
+
+[cisco-features]
+
+; ----------------------------------------------------------------
+; PARK — extension 700, slots 701-720 (defaults)
+; ----------------------------------------------------------------
+; Asterisk's res_parking module provides extension 700 (Park()) in
+; context 'parkedcalls', plus 701-720 (ParkedCall()) for retrieval.
+; Two ways a Cisco phone parks a call:
+;   - Trnsfer softkey -> dial 700 -> Trnsfer (a plain blind transfer);
+;   - the Park / ParkMonitor softkey, if the SEP enables it — handled
+;     natively by res_pjsip_cisco_remotecc, which blind-transfers the
+;     peer to <parkext>@<the parker's context> (parkext defaults to
+;     700, overridable per endpoint via parkext= on type=cisco) and
+;     pushes the slot back to the phone.
+; Either way res_parking allocates the slot, announces it, and rings
+; the call back to the parker after parkingtime if not retrieved.
+;
+; Verify res_parking is configured:  asterisk -rx 'parking show'
+; If no lot is listed, add one to /etc/asterisk/res_parking.conf, e.g.
+;   [general]
+;   [default]
+;   parkext => 700
+;   parkpos => 701-720
+;   context => parkedcalls
+;   parkingtime => 45
+;   comebacktoorigin => yes
+; (and check modules.conf for a noload of res_parking).
+;
+; Make 700 + 701-720 reachable from this context. `include =>
+; parkedcalls` does it — UNLESS this context also has a broad catch-all
+; (e.g. `_X.`): Asterisk consults included contexts only AFTER the
+; current context's own patterns, so the catch-all would shadow the
+; include. In that case claim the range explicitly with patterns that
+; out-rank `_X.`:
+;   exten => _70[0-9],1,Goto(parkedcalls,${EXTEN},1)
+;   exten => _71[0-9],1,Goto(parkedcalls,${EXTEN},1)
+;   exten => 720,1,Goto(parkedcalls,720,1)
+
+include => parkedcalls
+
+; ----------------------------------------------------------------
+; GROUP PICKUP — *8
+; ----------------------------------------------------------------
+; Picks up any ringing call in the dialer's pickup group. Endpoints
+; must share a group; in pjsip.conf:
+;     [1010]
+;     type            = endpoint
+;     ...
+;     named_call_group   = sales
+;     named_pickup_group = sales
+; Any 1010-class endpoint with named_pickup_group=sales can pick up
+; a ringing call to any other endpoint with named_call_group=sales.
+;
+; Pickup() (with no args) attempts to find any ringing peer in the
+; dialer's pickup group and bridge it. Returns -1 if none found,
+; which Hangup() handles cleanly.
+
+exten => *8,1,NoOp(Cisco group pickup by ${CHANNEL(endpoint)})
+ same => n,Pickup()
+ same => n,Hangup()
+
+; ----------------------------------------------------------------
+; AD-HOC CONFERENCE — 8001-8009 (meet-me numbers)
+; ----------------------------------------------------------------
+; Anyone who dials 8001 joins conference 8001. Multiple numbers
+; available so parallel conferences don't collide.
+;
+; ConfBridge() consults /etc/asterisk/confbridge.conf for the bridge
+; profile. A minimal confbridge.conf with the default profile is
+; enough — no PIN, no admin features required for this UX.
+;
+; Per-conference custom profile, if you ever want one, would look
+; like ConfBridge(${EXTEN},user_profile,bridge_profile).
+
+exten => _800X,1,NoOp(Cisco ad-hoc conference ${EXTEN})
+ same => n,Answer()
+ same => n,ConfBridge(${EXTEN})
+ same => n,Hangup()
+
+; ----------------------------------------------------------------
+; CHAINED-TRANSFER CONFERENCE — *0NNNN
+; ----------------------------------------------------------------
+; Replicates the CallManager Confrn softkey workflow without needing
+; the hardware Conference button:
+;   1. During a call, attended-transfer to *0<own-extension>.
+;   2. Phone now has a free line. Dial the third party.
+;   3. Attended-transfer the new call to *0<own-extension> again.
+;
+; Conference name is per-originator (cisco-conf-NNNN) so two users
+; running this workflow at the same time don't end up in the same
+; bridge by accident.
+
+exten => _*0X.,1,NoOp(Cisco chained-transfer conference for ${EXTEN:2})
+ same => n,Answer()
+ same => n,ConfBridge(cisco-conf-${EXTEN:2})
+ same => n,Hangup()
+
+; ----------------------------------------------------------------
+; OPTIONAL: Voicemail access — *97 (voicemail for the calling line)
+; ----------------------------------------------------------------
+; Cisco firmware has a Messages hardware button that's typically
+; provisioned in the SEP file to dial a fixed extension. If yours
+; isn't, *97 (caller's own mailbox) is the standard FreePBX-style
+; replacement.
+
+exten => *97,1,NoOp(Voicemail for ${CALLERID(num)})
+ same => n,VoiceMailMain(${CALLERID(num)}@default)
+ same => n,Hangup()

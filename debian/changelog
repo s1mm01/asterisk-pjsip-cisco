@@ -1,0 +1,12 @@
+asterisk-pjsip-cisco (0.1.0-1) unstable; urgency=medium
+
+  * Initial release — early 0.x; wants real-world testing before 1.0.
+  * Ten shared modules: res_pjsip_cisco_{endpoint,
+    pidf_body_generator, register_optionsind, bulkupdate,
+    unsolicited_blf, service_control, feature_events, call_extras,
+    remotecc, conference}.
+  * Built and CI'd against Asterisk 20.x / 22.x / 23.x; bench-tested
+    against a Cisco 7975 running Enterprise SIP firmware 9.4.2 on
+    Asterisk 22.9.0.
+
+ -- Andrew Simmonds <simmo@rinseout.org>  Wed, 13 May 2026 10:35:14 +0800

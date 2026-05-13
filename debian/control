@@ -1,0 +1,38 @@
+Source: asterisk-pjsip-cisco
+Section: comm
+Priority: optional
+Maintainer: Andrew Simmonds <simmo@rinseout.org>
+Build-Depends:
+ debhelper-compat (= 13),
+ asterisk-dev (>= 1:20.0.0),
+ pkg-config,
+ wget,
+ ca-certificates
+Standards-Version: 4.6.2
+Homepage: https://github.com/s1mm01/asterisk-pjsip-cisco
+Vcs-Git: https://github.com/s1mm01/asterisk-pjsip-cisco.git
+Vcs-Browser: https://github.com/s1mm01/asterisk-pjsip-cisco
+
+Package: asterisk-pjsip-cisco
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ asterisk (>= 1:20.0.0)
+Description: Cisco Enterprise SIP firmware support for Asterisk chan_pjsip
+ Ten shared modules that add Cisco Enterprise SIP firmware
+ (7975 / 8841 / 8861 / 8865 …) compatibility to Asterisk's chan_pjsip
+ channel driver, without patching Asterisk core.
+ .
+ Provides BLF Speed Dial line-button support, the Cisco RemoteCC
+ optionsind/bulkupdate REGISTER flow that the firmware expects, server-
+ pushed unsolicited Event: presence NOTIFYs, Cisco-flavoured PIDF body
+ generation, DND/CFwdALL softkey handling, and CLI commands for
+ service-control NOTIFYs (check-sync / restart / reset). Also adds Cisco
+ call signaling headers/SDP quirks and handles initial Cisco RemoteCC REFER
+ traffic, including HLog and MCID softkeys, plus Phase 1 conference
+ control (read-only ConfList participant list).
+ .
+ Targets phones running Cisco's Enterprise SIP firmware which would
+ otherwise need either CallManager or the cisco-usecallmanager chan_sip
+ patch. This package supersedes that patch for sites running chan_pjsip.

@@ -1,0 +1,22 @@
+# Build artefacts
+res/*.o
+res/*.so
+doc/res_pjsip_cisco-en_US.xml
+
+# Debian build droppings
+debian/.debhelper/
+debian/asterisk-pjsip-cisco/
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
+../*.deb
+../*.buildinfo
+../*.changes
+../*.dsc
+../*.tar.*
+
+# Editor
+*.swp
+*~
+.vscode/
+.idea/

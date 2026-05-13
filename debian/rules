@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+# Debian packaging rules for asterisk-pjsip-cisco.
+
+%:
+	dh $@
+
+override_dh_auto_install:
+	$(MAKE) install \
+	    DESTDIR=$(CURDIR)/debian/asterisk-pjsip-cisco \
+	    ASTERISK_MODULES_DIR=/usr/lib/asterisk/modules \
+	    ASTERISK_DOC_DIR=/var/lib/asterisk/documentation \
+	    ASTERISK_SAMPLE_DIR=/usr/share/doc/asterisk-pjsip-cisco
+
+# `make check` queries a running asterisk for module status - a runtime
+# smoke test, not a build-time one. dh_auto_test would otherwise invoke
+# it and fail every package build (no asterisk in the CI / build env).
+override_dh_auto_test:

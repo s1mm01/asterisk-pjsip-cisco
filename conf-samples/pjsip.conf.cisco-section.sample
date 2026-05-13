@@ -1,0 +1,77 @@
+; ----------------------------------------------------------------
+; Sample [name] type=cisco section to add to /etc/asterisk/pjsip.conf
+; alongside the existing endpoint / aor / auth sections for each
+; Cisco Enterprise SIP firmware phone.
+;
+; Section name MUST match the existing endpoint section name.
+; Existence of any [name] type=cisco section is the gating signal:
+; endpoints without one fall through unchanged (no Cisco-specific
+; behaviour applied).
+; ----------------------------------------------------------------
+
+[1010]
+type              = cisco
+
+; Cisco line button index for the primary line on the phone.
+; Most Cisco phones use line 1 for the user's own number;
+; remaining buttons (2..N) are BLF Speed Dial / Speed Dial.
+line_index        = 1
+
+; Comma-separated list of extensions whose state we push to the
+; phone via unsolicited NOTIFY at REGISTER time. Required to make
+; Cisco firmware classify the line buttons as BLF Speed Dial; without
+; entries here, those buttons render as plain Speed Dial.
+;
+; The list MUST match the BLF Speed Dial extensions configured on
+; the phone's SEP file; if it doesn't, you'll get either spurious
+; NOTIFYs (no harm done — phone ignores them) or missing buttons.
+subscribe         = 1001,1002,1003,1004,1005,1006,1007
+
+; Dialplan context to look up the subscribe= extensions in. Must
+; have a hint definition for each of them.
+subscribe_context = local_sip_phone
+
+; DND behavior when DND/<endpoint> is enabled in astdb or toggled from
+; the phone softkey. no = ring silently, yes = reject as busy.
+dnd_busy         = no
+
+; Comma-separated list of OTHER cisco-endpoint IDs that share the same
+; physical phone (multi-line phones — one endpoint per line button).
+; Empty (default) = single-line phone, REFER ships one <contact>.
+; When set, the bulkupdate REFER emits an additional <contact line="N">
+; element for each alias; line_index for each alias comes from the
+; alias's own [name] type=cisco section.
+aliases           =
+
+; Dialplan extension the RemoteCC Park softkey blind-transfers the call
+; to — i.e. res_parking's parkext. Default "700"; change to match
+; parkext in res_parking.conf if a site uses a different one. The
+; context is resolved per call (TRANSFER_CONTEXT chan var if set, else
+; this endpoint's context). Requires res_parking configured (a lot with
+; this parkext) and the parkext + slots reachable from the phones'
+; context — see extensions.conf.cisco-features.sample.
+parkext           = 700
+
+; ----------------------------------------------------------------
+; Multi-line example: an 8861 with three lines (1030 primary,
+; 1031 and 1032 on buttons 2 and 3).
+; Each line has its own type=endpoint/aor/auth/cisco sections;
+; the type=cisco sections cross-reference each other via aliases=.
+; ----------------------------------------------------------------
+;
+; [1030]
+; type              = cisco
+; line_index        = 1
+; aliases           = 1031,1032
+; subscribe         = 1001,1002,1003
+; subscribe_context = local_sip_phone
+;
+; [1031]
+; type              = cisco
+; line_index        = 2
+; aliases           = 1030,1032
+;
+; [1032]
+; type              = cisco
+; line_index        = 3
+; aliases           = 1030,1031
