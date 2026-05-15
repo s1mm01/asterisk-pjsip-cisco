@@ -1217,13 +1217,32 @@ static void call_extras_endpoint_outgoing_response(struct ast_sip_endpoint *endp
 	(void) contact;
 }
 
+/* Outgoing-only supplement, runs before chan_pjsip's CHANNEL-priority
+ * step. The outgoing-side hooks (SDP patching + Cisco header
+ * decoration) don't care about channel existence — the channel is
+ * already up by the time anything leaves on this leg. */
 static struct ast_sip_session_supplement call_extras_session_supplement = {
 	.method            = "INVITE,UPDATE",
 	.priority          = AST_SIP_SUPPLEMENT_PRIORITY_CHANNEL - 900,
-	.incoming_request  = call_extras_incoming_request,
-	.incoming_response = call_extras_incoming_response,
 	.outgoing_request  = call_extras_outgoing_request,
 	.outgoing_response = call_extras_outgoing_response,
+};
+
+/* Incoming SDP capture has to run AFTER chan_pjsip creates
+ * session->channel, otherwise the very first inbound INVITE's offer
+ * is observed with session->channel == NULL and silently dropped —
+ * which then makes later cross-leg lookups via ast_channel_bridge_peer
+ * fall back to the "unknown" branch and bypass both imageattr
+ * mirroring and the video-suppress guard for any call whose only SDP
+ * came from that initial offer. PRIORITY_CHANNEL + 100 places us
+ * after channel creation but still ahead of PRIORITY_LAST consumers,
+ * so the captured state is on session->channel by the time the next
+ * supplement (or this module's own outgoing-side patching) needs it. */
+static struct ast_sip_session_supplement call_extras_capture_supplement = {
+	.method            = "INVITE,UPDATE",
+	.priority          = AST_SIP_SUPPLEMENT_PRIORITY_CHANNEL + 100,
+	.incoming_request  = call_extras_incoming_request,
+	.incoming_response = call_extras_incoming_response,
 };
 
 static struct ast_sip_supplement call_extras_endpoint_supplement = {
@@ -1235,6 +1254,7 @@ static struct ast_sip_supplement call_extras_endpoint_supplement = {
 static int load_module(void)
 {
 	ast_sip_session_register_supplement(&call_extras_session_supplement);
+	ast_sip_session_register_supplement(&call_extras_capture_supplement);
 	ast_sip_register_supplement(&call_extras_endpoint_supplement);
 	return AST_MODULE_LOAD_SUCCESS;
 }
@@ -1252,6 +1272,7 @@ static int unload_module(void)
 		return -1;
 	}
 	ast_sip_unregister_supplement(&call_extras_endpoint_supplement);
+	ast_sip_session_unregister_supplement(&call_extras_capture_supplement);
 	ast_sip_session_unregister_supplement(&call_extras_session_supplement);
 	return 0;
 }
