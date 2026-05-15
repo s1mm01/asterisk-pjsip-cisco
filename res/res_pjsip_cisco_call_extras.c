@@ -872,19 +872,98 @@ static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 }
 
 /*!
- * \brief Find the bridge peer's channel for \a session and execute
- *        \a cb under that channel's lock, passing the cisco_h264_*
- *        datastore state (or NULL if not present).
+ * \brief Find a peer channel via linkedid traversal. Returns the
+ *        first non-self channel sharing \a local's linkedid, with a
+ *        ref the caller must release; NULL if none exists.
  *
- * Centralises the ref→unref→bridge_peer→lock→cb→unlock→unref dance
+ * We can't use ast_channel_bridge_peer() here because the consumer
+ * paths run before the bridge is formed: chan_pjsip emits the
+ * outgoing 200 OK during ast_answer(chan), which app_dial calls
+ * BEFORE ast_bridge_call(). At that moment ast_channel_get_bridge()
+ * returns NULL and bridge_peer() walks off the end — verified on
+ * the bench as the reason the video-suppress guard kept hitting its
+ * "unknown" branch and emitting a phantom m=video <port> sendonly
+ * back to the caller.
+ *
+ * Linkedid is propagated by app_dial when it creates the outbound
+ * channels (the originator's uniqueid becomes linkedid on every
+ * channel app_dial spawns), so both legs already share linkedid at
+ * the moment we patch the outgoing SDP — well before any bridging.
+ *
+ * Iterates all live channels and filters on linkedid. For typical
+ * PBX channel counts this is microseconds; we accept it as a
+ * once-per-SDP-patch cost rather than maintain a side index.
+ *
+ * Multi-party scenarios (conference, attended transfer mid-flight)
+ * return whichever match the iterator surfaces first — sufficient
+ * for "does ANY peer have these media properties" but not for
+ * picking a specific bridge participant.
+ */
+static struct ast_channel *find_linked_peer(struct ast_channel *local)
+{
+	struct ast_channel_iterator *iter;
+	struct ast_channel *peer = NULL;
+	struct ast_channel *candidate;
+	char local_linkedid[AST_MAX_UNIQUEID];
+
+	if (!local) {
+		return NULL;
+	}
+
+	/* linkedid is a const char * pointing into the channel struct;
+	 * snapshot under the channel lock so a subsequent destruction
+	 * can't pull the bytes out from under us. */
+	ast_channel_lock(local);
+	ast_copy_string(local_linkedid,
+		S_OR(ast_channel_linkedid(local), ""),
+		sizeof(local_linkedid));
+	ast_channel_unlock(local);
+
+	if (ast_strlen_zero(local_linkedid)) {
+		return NULL;
+	}
+
+	iter = ast_channel_iterator_all_new();
+	if (!iter) {
+		return NULL;
+	}
+
+	while ((candidate = ast_channel_iterator_next(iter))) {
+		const char *c_linkedid;
+		int match;
+
+		if (candidate == local) {
+			ast_channel_unref(candidate);
+			continue;
+		}
+
+		ast_channel_lock(candidate);
+		c_linkedid = ast_channel_linkedid(candidate);
+		match = !ast_strlen_zero(c_linkedid)
+			&& !strcmp(c_linkedid, local_linkedid);
+		ast_channel_unlock(candidate);
+
+		if (match) {
+			peer = candidate;        /* keep ref */
+			break;
+		}
+		ast_channel_unref(candidate);
+	}
+	ast_channel_iterator_destroy(iter);
+	return peer;
+}
+
+/*!
+ * \brief Find the peer channel for \a session and execute \a cb under
+ *        that channel's lock, passing the cisco_h264_* datastore state
+ *        (or NULL if not present).
+ *
+ * Centralises the ref→find_linked_peer→lock→cb→unlock→unref dance
  * shared by the imageattr-mirror and video-suppress paths.
  *
- * ast_channel_bridge_peer() requires no channel lock held by us at
- * call time, hence we drop the local ref before asking for the peer.
- *
  * \retval The callback's return value, or \a default_rc if no peer
- *         channel exists (mid-bridge transition, single-leg call,
- *         peer leg already torn down).
+ *         channel exists (single-leg call, peer leg already torn down,
+ *         channel iterator allocation failure).
  */
 typedef int (*peer_state_cb)(const struct cisco_h264_imageattr_state *state,
 	void *cb_arg);
@@ -902,7 +981,7 @@ static int with_peer_state(struct ast_sip_session *session,
 		return default_rc;
 	}
 
-	peer = ast_channel_bridge_peer(local);
+	peer = find_linked_peer(local);
 	ast_channel_unref(local);
 	if (!peer) {
 		return default_rc;
