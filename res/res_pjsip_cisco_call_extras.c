@@ -71,17 +71,40 @@
 #define CISCO_H264_IMAGEATTR "[x=640,y=480,q=0.50]"
 
 /*!
- * \brief Datastore that pins the peer's most-recently-seen H.264
- *        imageattr value (verbatim, with the leading payload number
- *        already stripped) onto its ast_channel.
+ * \brief Datastore that pins media-negotiation observations from the
+ *        peer's most-recently-seen incoming SDP onto its ast_channel.
  *
- * Set by the incoming offer/answer hook on the leg whose SDP carried
- * the attribute; consumed by the outgoing offer/answer hook on the
- * bridge peer leg via ast_channel_bridge_peer(). The string is owned
- * by the datastore and freed in the destroy callback.
+ * Set by the incoming offer/answer hook on the leg whose SDP arrived;
+ * consumed by the outgoing offer/answer hook on the bridge peer leg
+ * via ast_channel_bridge_peer().
+ *
+ * Fields:
+ *   value           — peer's H.264 imageattr value (leading payload
+ *                     number stripped). NULL when peer's SDP had no
+ *                     a=imageattr on its H.264 payloads. Owned by the
+ *                     datastore; freed in the destroy callback.
+ *   had_video_media — 1 if peer's last incoming SDP carried any
+ *                     m=video line at all (with non-zero port and
+ *                     active direction), 0 if it had none. Used to
+ *                     suppress phantom outgoing-answer video streams
+ *                     where chan_pjsip's keep:all codec preference
+ *                     would otherwise emit m=video <port> sendonly
+ *                     against a peer leg that has no video to relay
+ *                     — Cisco firmware then opens its receive pane
+ *                     and waits forever for frames that never arrive
+ *                     (the "black video box on voice-only calls"
+ *                     symptom).
+ *   observed        — 1 once we've parsed at least one incoming SDP
+ *                     for this channel. Distinguishes "peer had no
+ *                     video" (observed=1, had_video_media=0) from
+ *                     "we never saw an SDP for this leg yet"
+ *                     (observed=0), which the suppression logic
+ *                     conservatively skips.
  */
 struct cisco_h264_imageattr_state {
 	char *value;
+	int   had_video_media;
+	int   observed;
 };
 
 static void cisco_h264_imageattr_destroy(void *data)
@@ -726,14 +749,66 @@ static char *media_first_h264_imageattr(const pjmedia_sdp_media *media)
 }
 
 /*!
- * \brief Stash the first H.264 imageattr from \a sdp on the session's
- *        ast_channel, overwriting any prior value.
+ * \brief Has \a media any direction attribute (sendrecv/sendonly/
+ *        recvonly/inactive)? Caller uses this together with the port
+ *        check to decide whether the m=video line is "live" enough
+ *        that the peer leg should treat it as a real video offer.
  *
- * No-op when the SDP carries no H.264 imageattr (we deliberately do
- * NOT clear a stale value here — a re-INVITE/UPDATE that omits the
- * attribute typically just keeps using the previously negotiated
- * shape, and clearing would cause us to fall back to the static
- * default mid-call).
+ * An SDP without any explicit direction attribute defaults to
+ * sendrecv per RFC 3264 §5.1, so absence-of-attribute counts as
+ * "live". Only an explicit a=inactive turns it off.
+ */
+static int media_is_inactive(const pjmedia_sdp_media *media)
+{
+	unsigned int i;
+
+	for (i = 0; i < media->attr_count; ++i) {
+		if (!pj_stricmp2(&media->attr[i]->name, "inactive")) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int sdp_has_active_video_media(const pjmedia_sdp_session *sdp)
+{
+	unsigned int i;
+
+	if (!sdp) {
+		return 0;
+	}
+	for (i = 0; i < sdp->media_count; ++i) {
+		const pjmedia_sdp_media *m = sdp->media[i];
+
+		if (!media_is_video(m)) {
+			continue;
+		}
+		if (m->desc.port == 0) {
+			continue;        /* port=0 = peer rejected this stream */
+		}
+		if (media_is_inactive(m)) {
+			continue;        /* a=inactive = stream is muted both ways */
+		}
+		return 1;
+	}
+	return 0;
+}
+
+/*!
+ * \brief Stash everything we observed about \a sdp on the session's
+ *        ast_channel: the peer's H.264 imageattr value (if any), and
+ *        whether the peer's SDP carried any live video media at all.
+ *
+ * Always creates/updates the datastore once we've successfully parsed
+ * an SDP for this leg, even when the SDP carried no H.264 imageattr —
+ * the had_video_media + observed fields are independently useful for
+ * suppressing phantom outgoing-answer video to the bridge peer.
+ *
+ * imageattr value is only overwritten when this SDP actually carried
+ * one (a re-INVITE that omits the attribute keeps the previously-
+ * negotiated shape). had_video_media is overwritten unconditionally —
+ * it reflects the most recent observation, including transitions like
+ * a re-INVITE that drops the video stream.
  */
 static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 	const pjmedia_sdp_session *sdp)
@@ -742,6 +817,7 @@ static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 	struct ast_datastore *ds;
 	struct cisco_h264_imageattr_state *state;
 	char *value = NULL;
+	int had_video;
 	unsigned int i;
 
 	if (!sdp) {
@@ -750,9 +826,7 @@ static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 	for (i = 0; i < sdp->media_count && !value; ++i) {
 		value = media_first_h264_imageattr(sdp->media[i]);
 	}
-	if (!value) {
-		return;
-	}
+	had_video = sdp_has_active_video_media(sdp);
 
 	channel = cisco_session_channel_ref(session);
 	if (!channel) {
@@ -764,8 +838,12 @@ static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 	ds = ast_channel_datastore_find(channel, &cisco_h264_imageattr_info, NULL);
 	if (ds) {
 		state = ds->data;
-		ast_free(state->value);
-		state->value = value;
+		if (value) {
+			ast_free(state->value);
+			state->value = value;
+		}
+		state->had_video_media = had_video;
+		state->observed        = 1;
 	} else {
 		state = ast_calloc(1, sizeof(*state));
 		ds = state ? ast_datastore_alloc(&cisco_h264_imageattr_info, NULL) : NULL;
@@ -779,55 +857,116 @@ static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 			ast_channel_unref(channel);
 			return;
 		}
-		state->value = value;
-		ds->data = state;
+		state->value           = value;
+		state->had_video_media = had_video;
+		state->observed        = 1;
+		ds->data               = state;
 		ast_channel_datastore_add(channel, ds);
 	}
-	ast_debug(2, "cisco-call-extras: captured H.264 imageattr '%s' on %s\n",
-		value, ast_channel_name(channel));
+	ast_debug(2,
+		"cisco-call-extras: captured peer SDP on %s — imageattr='%s' "
+		"had_video=%d\n", ast_channel_name(channel),
+		state->value ? state->value : "(none)", had_video);
 	ast_channel_unlock(channel);
 	ast_channel_unref(channel);
 }
 
 /*!
- * \brief Dup the bridge peer's stashed H.264 imageattr tuples, or NULL
- *        if none. Caller ast_free()s the result.
+ * \brief Find the bridge peer's channel for \a session and execute
+ *        \a cb under that channel's lock, passing the cisco_h264_*
+ *        datastore state (or NULL if not present).
+ *
+ * Centralises the ref→unref→bridge_peer→lock→cb→unlock→unref dance
+ * shared by the imageattr-mirror and video-suppress paths.
  *
  * ast_channel_bridge_peer() requires no channel lock held by us at
- * call time, hence the ref→unref→bridge_peer dance instead of
- * holding the session-channel ref.
+ * call time, hence we drop the local ref before asking for the peer.
+ *
+ * \retval The callback's return value, or \a default_rc if no peer
+ *         channel exists (mid-bridge transition, single-leg call,
+ *         peer leg already torn down).
  */
-static char *cisco_h264_peer_imageattr(struct ast_sip_session *session)
+typedef int (*peer_state_cb)(const struct cisco_h264_imageattr_state *state,
+	void *cb_arg);
+
+static int with_peer_state(struct ast_sip_session *session,
+	peer_state_cb cb, void *cb_arg, int default_rc)
 {
 	struct ast_channel *local;
 	struct ast_channel *peer;
 	struct ast_datastore *ds;
-	struct cisco_h264_imageattr_state *state;
-	char *value = NULL;
+	int rc;
 
 	local = cisco_session_channel_ref(session);
 	if (!local) {
-		return NULL;
+		return default_rc;
 	}
 
 	peer = ast_channel_bridge_peer(local);
 	ast_channel_unref(local);
 	if (!peer) {
-		return NULL;
+		return default_rc;
 	}
 
 	ast_channel_lock(peer);
 	ds = ast_channel_datastore_find(peer, &cisco_h264_imageattr_info, NULL);
-	if (ds) {
-		state = ds->data;
-		if (state && state->value) {
-			value = ast_strdup(state->value);
-		}
-	}
+	rc = cb(ds ? ds->data : NULL, cb_arg);
 	ast_channel_unlock(peer);
 	ast_channel_unref(peer);
 
+	return rc;
+}
+
+static int peer_imageattr_cb(const struct cisco_h264_imageattr_state *state,
+	void *cb_arg)
+{
+	char **out = cb_arg;
+
+	if (state && state->value) {
+		*out = ast_strdup(state->value);
+	}
+	return 0;
+}
+
+/*!
+ * \brief Dup the bridge peer's stashed H.264 imageattr tuples, or
+ *        NULL if none / no peer / peer never sent imageattr. Caller
+ *        ast_free()s the result.
+ */
+static char *cisco_h264_peer_imageattr(struct ast_sip_session *session)
+{
+	char *value = NULL;
+
+	with_peer_state(session, peer_imageattr_cb, &value, 0);
 	return value;
+}
+
+static int peer_had_video_cb(const struct cisco_h264_imageattr_state *state,
+	void *cb_arg)
+{
+	(void) cb_arg;
+
+	if (!state || !state->observed) {
+		return -1;        /* unknown — never parsed peer SDP */
+	}
+	return state->had_video_media ? 1 : 0;
+}
+
+/*!
+ * \brief Did the bridge peer's most-recent incoming SDP carry any
+ *        live video media line?
+ *
+ * \retval  1  peer had video media (non-zero port, not inactive).
+ * \retval  0  peer's SDP had no video, or only had video on port 0
+ *             or a=inactive (RFC 3264 §6 rejected).
+ * \retval -1  unknown — either no bridge peer at this moment (call
+ *             still mid-setup, e.g. answer hasn't bridged yet) or
+ *             peer leg's incoming hook hasn't fired yet. Callers
+ *             should treat this as "don't suppress, let it through".
+ */
+static int cisco_h264_peer_had_video(struct ast_sip_session *session)
+{
+	return with_peer_state(session, peer_had_video_cb, NULL, -1);
 }
 
 static int add_imageattr(pj_pool_t *pool, pjmedia_sdp_media *media,
@@ -869,13 +1008,66 @@ static int add_imageattr(pj_pool_t *pool, pjmedia_sdp_media *media,
 		== PJ_SUCCESS ? 1 : -1;
 }
 
+/*!
+ * \brief Set \a media's port to 0, the RFC 3264 §6 "I reject this
+ *        media stream" signal. Returns 1 if the port was actually
+ *        changed (caller marks the SDP dirty), 0 if it was already 0.
+ *
+ * Per RFC 3264 §6 the answerer MAY also strip the attribute list down
+ * to just the required rtpmap entries, but neither requirement nor
+ * Cisco firmware care — leaving the existing attributes alone keeps
+ * the diff to a single field change and means we don't have to
+ * allocate fresh attr storage out of the pool.
+ */
+static int media_set_rejected(pjmedia_sdp_media *media)
+{
+	if (media->desc.port == 0) {
+		return 0;
+	}
+	media->desc.port = 0;
+	return 1;
+}
+
 static int patch_video_media(pj_pool_t *pool, pjmedia_sdp_media *media,
 	struct ast_sip_session *session)
 {
 	unsigned int i;
 	int changed = 0;
+	int has_h264 = 0;
 
 	if (!media_is_video(media)) {
+		return 0;
+	}
+	if (media->desc.port == 0) {
+		return 0;        /* already rejected upstream; nothing to do */
+	}
+
+	for (i = 0; i < media->desc.fmt_count && !has_h264; ++i) {
+		pjmedia_sdp_attr *rtpmap = pjmedia_sdp_media_find_attr2(
+			media, "rtpmap", &media->desc.fmt[i]);
+		has_h264 = rtpmap_is_h264(rtpmap);
+	}
+	if (!has_h264) {
+		return 0;        /* not an H.264 stream we'd be augmenting */
+	}
+
+	/* Suppress the phantom video stream: when chan_pjsip's keep:all
+	 * codec preference has emitted an outgoing-answer m=video against
+	 * a bridge peer that didn't itself offer any video, the Cisco
+	 * caller opens its receive pane on the advertised port and waits
+	 * forever for frames that never arrive (the "black video box on
+	 * voice-only calls" symptom). Reject our video with port=0 so the
+	 * caller drops the pane immediately. peer_had_video == -1 means
+	 * we haven't observed the peer's SDP yet (mid-setup); leave the
+	 * stream alone in that case rather than guess. */
+	if (session && cisco_h264_peer_had_video(session) == 0) {
+		if (media_set_rejected(media)) {
+			ast_debug(2,
+				"cisco-call-extras: rejected outgoing H.264 video "
+				"(port -> 0) — bridge peer offered no video to "
+				"relay\n");
+			return 1;
+		}
 		return 0;
 	}
 
