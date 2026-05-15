@@ -9,13 +9,30 @@
  *   - Call-Info: <urn:x-cisco-remotecc:callinfo>;orientation=...;security=...
  *   - Remote-Party-ID URI parameter x-cisco-callback-number from the
  *     CISCO_CALLBACK_NUMBER channel variable
- *   - Cisco H.264 SDP hints: b=TIAS:4000000 and default imageattr
+ *   - Cisco-side H.264 SDP hints: b=TIAS:4000000 and default imageattr
  *
- * Wire shapes mirror the cisco-usecallmanager chan_sip patch:
+ * Header/body wire shapes mirror the cisco-usecallmanager chan_sip patch:
  *   channels/sip/message.c sip_message_add_call_info()
  *   channels/sip/message.c sip_message_add_supported()
  *   channels/sip/message.c sip_message_add_identity()
  *   channels/sip/sdp.c     sip_sdp_add_video_codec()
+ *
+ * H.264 imageattr propagation: incoming offer/answer SDP is parsed for
+ * a=imageattr on H.264 payloads and the value is stashed on the
+ * receiving leg's ast_channel via ast_datastore. When emitting outgoing
+ * SDP on the bridge peer leg, we mirror that stashed value (rewritten
+ * with our own payload number) instead of the static CISCO_H264_IMAGEATTR
+ * fallback. Gareth's chan_sip patch does the equivalent by widening
+ * struct ast_format_h264 inside Asterisk core; replacing that format
+ * interface from an out-of-tree module isn't workable —
+ * ast_format_interface_register() in main/format.c refuses a second
+ * registration for "h264" and there's no unregister, so the only path
+ * is to noload res_format_attr_h264.so and ship a replacement, which
+ * this project explicitly avoids. The supplement-boundary mirroring
+ * here covers the native chan_pjsip-to-chan_pjsip case. The static
+ * fallback still applies when there is no bridge peer yet (first
+ * INVITE), the peer never advertised imageattr, or the peer isn't on
+ * a Cisco-flagged session.
  */
 
 /*** MODULEINFO
@@ -52,6 +69,36 @@
 #define CISCO_CONFERENCE_DISPLAY_TOKEN "\2004"
 #define CISCO_H264_TIAS 4000000
 #define CISCO_H264_IMAGEATTR "[x=640,y=480,q=0.50]"
+
+/*!
+ * \brief Datastore that pins the peer's most-recently-seen H.264
+ *        imageattr value (verbatim, with the leading payload number
+ *        already stripped) onto its ast_channel.
+ *
+ * Set by the incoming offer/answer hook on the leg whose SDP carried
+ * the attribute; consumed by the outgoing offer/answer hook on the
+ * bridge peer leg via ast_channel_bridge_peer(). The string is owned
+ * by the datastore and freed in the destroy callback.
+ */
+struct cisco_h264_imageattr_state {
+	char *value;
+};
+
+static void cisco_h264_imageattr_destroy(void *data)
+{
+	struct cisco_h264_imageattr_state *state = data;
+
+	if (!state) {
+		return;
+	}
+	ast_free(state->value);
+	ast_free(state);
+}
+
+static const struct ast_datastore_info cisco_h264_imageattr_info = {
+	.type    = "cisco_h264_imageattr",
+	.destroy = cisco_h264_imageattr_destroy,
+};
 
 static int endpoint_is_cisco(struct ast_sip_endpoint *endpoint)
 {
@@ -607,21 +654,210 @@ static int media_has_imageattr(const pjmedia_sdp_media *media,
 	return 0;
 }
 
+/*!
+ * \brief Duplicate the trailing tuples of an imageattr value, stripping
+ *        the leading payload number (or '*') and surrounding whitespace.
+ *
+ * Returns a malloced string the caller must ast_free(), or NULL when
+ * the value carries nothing past the payload selector. Sized to cover
+ * the multi-tuple '*' form (recv + send + multiple xywh/q sets).
+ */
+static char *imageattr_strip_fmt(const pj_str_t *value)
+{
+	char buf[1024];
+	char *p;
+
+	if (!value || value->slen == 0) {
+		return NULL;
+	}
+
+	ast_copy_pj_str(buf, value, sizeof(buf));
+	p = buf;
+	while (*p == ' ' || *p == '\t') {
+		++p;
+	}
+
+	if (*p == '*') {
+		++p;
+	} else {
+		while (*p && *p != ' ' && *p != '\t') {
+			++p;
+		}
+	}
+	while (*p == ' ' || *p == '\t') {
+		++p;
+	}
+
+	return ast_strlen_zero(p) ? NULL : ast_strdup(p);
+}
+
+static char *media_first_h264_imageattr(const pjmedia_sdp_media *media)
+{
+	unsigned int i;
+	unsigned int j;
+
+	if (!media_is_video(media)) {
+		return NULL;
+	}
+
+	for (i = 0; i < media->desc.fmt_count; ++i) {
+		const pj_str_t *fmt = &media->desc.fmt[i];
+		pjmedia_sdp_attr *rtpmap;
+
+		rtpmap = pjmedia_sdp_media_find_attr2((pjmedia_sdp_media *) media,
+			"rtpmap", fmt);
+		if (!rtpmap_is_h264(rtpmap)) {
+			continue;
+		}
+
+		for (j = 0; j < media->attr_count; ++j) {
+			pjmedia_sdp_attr *attr = media->attr[j];
+
+			if (pj_stricmp2(&attr->name, "imageattr")) {
+				continue;
+			}
+			if (imageattr_matches_payload(attr, fmt)) {
+				return imageattr_strip_fmt(&attr->value);
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/*!
+ * \brief Stash the first H.264 imageattr from \a sdp on the session's
+ *        ast_channel, overwriting any prior value.
+ *
+ * No-op when the SDP carries no H.264 imageattr (we deliberately do
+ * NOT clear a stale value here — a re-INVITE/UPDATE that omits the
+ * attribute typically just keeps using the previously negotiated
+ * shape, and clearing would cause us to fall back to the static
+ * default mid-call).
+ */
+static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
+	const pjmedia_sdp_session *sdp)
+{
+	struct ast_channel *channel;
+	struct ast_datastore *ds;
+	struct cisco_h264_imageattr_state *state;
+	char *value = NULL;
+	unsigned int i;
+
+	if (!sdp) {
+		return;
+	}
+	for (i = 0; i < sdp->media_count && !value; ++i) {
+		value = media_first_h264_imageattr(sdp->media[i]);
+	}
+	if (!value) {
+		return;
+	}
+
+	channel = cisco_session_channel_ref(session);
+	if (!channel) {
+		ast_free(value);
+		return;
+	}
+
+	ast_channel_lock(channel);
+	ds = ast_channel_datastore_find(channel, &cisco_h264_imageattr_info, NULL);
+	if (ds) {
+		state = ds->data;
+		ast_free(state->value);
+		state->value = value;
+	} else {
+		state = ast_calloc(1, sizeof(*state));
+		ds = state ? ast_datastore_alloc(&cisco_h264_imageattr_info, NULL) : NULL;
+		if (!state || !ds) {
+			ast_free(value);
+			ast_free(state);
+			if (ds) {
+				ast_datastore_free(ds);
+			}
+			ast_channel_unlock(channel);
+			ast_channel_unref(channel);
+			return;
+		}
+		state->value = value;
+		ds->data = state;
+		ast_channel_datastore_add(channel, ds);
+	}
+	ast_debug(2, "cisco-call-extras: captured H.264 imageattr '%s' on %s\n",
+		value, ast_channel_name(channel));
+	ast_channel_unlock(channel);
+	ast_channel_unref(channel);
+}
+
+/*!
+ * \brief Dup the bridge peer's stashed H.264 imageattr tuples, or NULL
+ *        if none. Caller ast_free()s the result.
+ *
+ * ast_channel_bridge_peer() requires no channel lock held by us at
+ * call time, hence the ref→unref→bridge_peer dance instead of
+ * holding the session-channel ref.
+ */
+static char *cisco_h264_peer_imageattr(struct ast_sip_session *session)
+{
+	struct ast_channel *local;
+	struct ast_channel *peer;
+	struct ast_datastore *ds;
+	struct cisco_h264_imageattr_state *state;
+	char *value = NULL;
+
+	local = cisco_session_channel_ref(session);
+	if (!local) {
+		return NULL;
+	}
+
+	peer = ast_channel_bridge_peer(local);
+	ast_channel_unref(local);
+	if (!peer) {
+		return NULL;
+	}
+
+	ast_channel_lock(peer);
+	ds = ast_channel_datastore_find(peer, &cisco_h264_imageattr_info, NULL);
+	if (ds) {
+		state = ds->data;
+		if (state && state->value) {
+			value = ast_strdup(state->value);
+		}
+	}
+	ast_channel_unlock(peer);
+	ast_channel_unref(peer);
+
+	return value;
+}
+
 static int add_imageattr(pj_pool_t *pool, pjmedia_sdp_media *media,
-	const pj_str_t *fmt)
+	const pj_str_t *fmt, struct ast_sip_session *session)
 {
 	pjmedia_sdp_attr *attr;
 	pj_str_t value;
-	char value_buf[128];
+	/* 1024 mirrors imageattr_matches_payload()'s buffer — the
+	 * peer-mirrored multi-tuple form (send + recv with several xywh/q
+	 * sets) easily exceeds the old 128. */
+	char value_buf[1024];
 	char fmt_buf[16];
+	char *peer_value;
 
 	if (media_has_imageattr(media, fmt)) {
 		return 0;
 	}
 
 	ast_copy_pj_str(fmt_buf, fmt, sizeof(fmt_buf));
-	snprintf(value_buf, sizeof(value_buf), "%s recv %s", fmt_buf,
-		CISCO_H264_IMAGEATTR);
+	peer_value = session ? cisco_h264_peer_imageattr(session) : NULL;
+	if (peer_value) {
+		snprintf(value_buf, sizeof(value_buf), "%s %s", fmt_buf, peer_value);
+		ast_debug(2,
+			"cisco-call-extras: mirroring peer H.264 imageattr -> '%s'\n",
+			value_buf);
+		ast_free(peer_value);
+	} else {
+		snprintf(value_buf, sizeof(value_buf), "%s recv %s", fmt_buf,
+			CISCO_H264_IMAGEATTR);
+	}
 
 	pj_cstr(&value, value_buf);
 	attr = pjmedia_sdp_attr_create(pool, "imageattr", &value);
@@ -633,7 +869,8 @@ static int add_imageattr(pj_pool_t *pool, pjmedia_sdp_media *media,
 		== PJ_SUCCESS ? 1 : -1;
 }
 
-static int patch_video_media(pj_pool_t *pool, pjmedia_sdp_media *media)
+static int patch_video_media(pj_pool_t *pool, pjmedia_sdp_media *media,
+	struct ast_sip_session *session)
 {
 	unsigned int i;
 	int changed = 0;
@@ -660,7 +897,7 @@ static int patch_video_media(pj_pool_t *pool, pjmedia_sdp_media *media)
 			changed = 1;
 		}
 
-		res = add_imageattr(pool, media, fmt);
+		res = add_imageattr(pool, media, fmt, session);
 		if (res < 0) {
 			ast_log(LOG_WARNING,
 				"cisco-call-extras: unable to add H.264 imageattr\n");
@@ -672,7 +909,7 @@ static int patch_video_media(pj_pool_t *pool, pjmedia_sdp_media *media)
 	return changed;
 }
 
-static void patch_sdp(pjsip_tx_data *tdata)
+static void patch_sdp(struct ast_sip_session *session, pjsip_tx_data *tdata)
 {
 	pjsip_sdp_info *sdp_info;
 	pjmedia_sdp_session *sdp;
@@ -691,7 +928,7 @@ static void patch_sdp(pjsip_tx_data *tdata)
 
 	sdp = sdp_info->sdp;
 	for (i = 0; i < sdp->media_count; ++i) {
-		if (patch_video_media(tdata->pool, sdp->media[i]) > 0) {
+		if (patch_video_media(tdata->pool, sdp->media[i], session) > 0) {
 			changed = 1;
 		}
 	}
@@ -701,6 +938,24 @@ static void patch_sdp(pjsip_tx_data *tdata)
 		ast_debug(2,
 			"cisco-call-extras: patched outgoing SDP with H.264 hints\n");
 	}
+}
+
+static void capture_incoming_sdp(struct ast_sip_session *session,
+	pjsip_rx_data *rdata)
+{
+	pjsip_sdp_info *sdp_info;
+
+	if (!rdata || !rdata->msg_info.msg || !rdata->msg_info.msg->body) {
+		return;
+	}
+
+	sdp_info = pjsip_get_sdp_info(rdata->tp_info.pool, rdata->msg_info.msg->body,
+		NULL, &pjsip_media_type_application_sdp);
+	if (sdp_info->sdp_err != PJ_SUCCESS || !sdp_info->sdp) {
+		return;
+	}
+
+	cisco_h264_save_peer_imageattr(session, sdp_info->sdp);
 }
 
 static void handle_session_outgoing(struct ast_sip_session *session,
@@ -716,7 +971,7 @@ static void handle_session_outgoing(struct ast_sip_session *session,
 
 	if (method_is(tdata, "INVITE")) {
 		add_call_info(session, tdata);
-		patch_sdp(tdata);
+		patch_sdp(session, tdata);
 	}
 }
 
@@ -730,6 +985,26 @@ static void call_extras_outgoing_response(struct ast_sip_session *session,
 	pjsip_tx_data *tdata)
 {
 	handle_session_outgoing(session, tdata);
+}
+
+/*
+ * Capture is intentionally NOT gated on endpoint_is_cisco — we want
+ * to stash a peer's imageattr regardless of which side it came from,
+ * so the bridge peer's outgoing hook can mirror it. The cost is one
+ * ast_datastore per chan_pjsip call that happens to carry an H.264
+ * imageattr; the consume path is still Cisco-only.
+ */
+static int call_extras_incoming_request(struct ast_sip_session *session,
+	pjsip_rx_data *rdata)
+{
+	capture_incoming_sdp(session, rdata);
+	return 0;
+}
+
+static void call_extras_incoming_response(struct ast_sip_session *session,
+	pjsip_rx_data *rdata)
+{
+	capture_incoming_sdp(session, rdata);
 }
 
 static void call_extras_endpoint_outgoing_request(struct ast_sip_endpoint *endpoint,
@@ -753,6 +1028,8 @@ static void call_extras_endpoint_outgoing_response(struct ast_sip_endpoint *endp
 static struct ast_sip_session_supplement call_extras_session_supplement = {
 	.method            = "INVITE,UPDATE",
 	.priority          = AST_SIP_SUPPLEMENT_PRIORITY_CHANNEL - 900,
+	.incoming_request  = call_extras_incoming_request,
+	.incoming_response = call_extras_incoming_response,
 	.outgoing_request  = call_extras_outgoing_request,
 	.outgoing_response = call_extras_outgoing_response,
 };
