@@ -872,47 +872,107 @@ static void cisco_h264_save_peer_imageattr(struct ast_sip_session *session,
 }
 
 /*!
- * \brief Find a peer channel via linkedid traversal. Returns the
- *        first non-self channel sharing \a local's linkedid, with a
- *        ref the caller must release; NULL if none exists.
+ * \brief Visitor callback for with_peer_state(). Invoked once per
+ *        candidate peer channel; \a state is the channel's
+ *        cisco_h264_imageattr_state, or NULL if the channel has no
+ *        such datastore (Local helper channel, parking lot, etc).
  *
- * We can't use ast_channel_bridge_peer() here because the consumer
- * paths run before the bridge is formed: chan_pjsip emits the
- * outgoing 200 OK during ast_answer(chan), which app_dial calls
- * BEFORE ast_bridge_call(). At that moment ast_channel_get_bridge()
- * returns NULL and bridge_peer() walks off the end — verified on
- * the bench as the reason the video-suppress guard kept hitting its
- * "unknown" branch and emitting a phantom m=video <port> sendonly
- * back to the caller.
- *
- * Linkedid is propagated by app_dial when it creates the outbound
- * channels (the originator's uniqueid becomes linkedid on every
- * channel app_dial spawns), so both legs already share linkedid at
- * the moment we patch the outgoing SDP — well before any bridging.
- *
- * Iterates all live channels and filters on linkedid. For typical
- * PBX channel counts this is microseconds; we accept it as a
- * once-per-SDP-patch cost rather than maintain a side index.
- *
- * Multi-party scenarios (conference, attended transfer mid-flight)
- * return whichever match the iterator surfaces first — sufficient
- * for "does ANY peer have these media properties" but not for
- * picking a specific bridge participant.
+ * Return PEER_CB_DONE to stop the walk (e.g. once the imageattr
+ * lookup has its answer), PEER_CB_CONTINUE to accumulate across
+ * further candidates (e.g. the had_video lookup, which has to
+ * inspect every observed peer before deciding suppression). The
+ * \a cb_arg holds the caller's accumulator state.
  */
-static struct ast_channel *find_linked_peer(struct ast_channel *local)
+typedef enum {
+	PEER_CB_CONTINUE,
+	PEER_CB_DONE,
+} peer_cb_result;
+
+typedef peer_cb_result (*peer_state_cb)(
+	const struct cisco_h264_imageattr_state *state, void *cb_arg);
+
+static peer_cb_result invoke_cb_on_channel(struct ast_channel *peer,
+	peer_state_cb cb, void *cb_arg)
 {
+	struct ast_datastore *ds;
+	peer_cb_result rc;
+
+	ast_channel_lock(peer);
+	ds = ast_channel_datastore_find(peer, &cisco_h264_imageattr_info, NULL);
+	rc = cb(ds ? ds->data : NULL, cb_arg);
+	ast_channel_unlock(peer);
+	return rc;
+}
+
+/*!
+ * \brief Run \a cb against the cisco_h264_imageattr_state for each
+ *        viable peer channel of \a session, until \a cb signals DONE
+ *        or we run out of candidates.
+ *
+ * Two phases:
+ *
+ *   1. Fast path — ast_channel_bridge_peer(). Precise when the
+ *      bridge exists (post-answer, post-impart). Returns NULL for
+ *      3+ party bridges, in which case we fall through to phase 2.
+ *
+ *   2. Linkedid walk. Iterates every live channel sharing the local
+ *      channel's linkedid (set by app_dial when it spawns each
+ *      outbound channel), runs \a cb on each match. Required for
+ *      the pre-bridge window: chan_pjsip emits the outgoing 200 OK
+ *      during ast_answer(), which app_dial calls BEFORE
+ *      ast_bridge_call() — bridge_peer() returns NULL at that
+ *      moment, but linkedid is already propagated to both legs.
+ *      Verified on the bench: without this fallback the video
+ *      suppression guard kept missing the initial 200 OK and the
+ *      8865 painted a black video pane for the full call.
+ *
+ * Aggregation lives in the callback. Helper channels in the dial
+ * chain (Local;1/;2, parking, etc) share linkedid but have no
+ * cisco_h264_* datastore, so they call \a cb with state=NULL —
+ * had_video accumulation conservatively treats those as "no signal"
+ * rather than "no video", and the imageattr lookup naturally
+ * skips them. That's the fix for "first channel with linkedid
+ * wins" picking up a Local helper and shadowing the real PJSIP
+ * peer's state.
+ *
+ * Multi-party scenarios: phase 1 returns NULL (bridge isn't 2-
+ * party), phase 2 visits every leg and the callback's accumulator
+ * decides the outcome. For had_video this means "suppress only
+ * when every observed peer offered no video" — correct for the
+ * voice-only-extension-in-a-conference case where SOME participant
+ * has video.
+ */
+static void with_peer_state(struct ast_sip_session *session,
+	peer_state_cb cb, void *cb_arg)
+{
+	struct ast_channel *local;
+	struct ast_channel *peer;
 	struct ast_channel_iterator *iter;
-	struct ast_channel *peer = NULL;
 	struct ast_channel *candidate;
 	char local_linkedid[AST_MAX_UNIQUEID];
 
+	local = cisco_session_channel_ref(session);
 	if (!local) {
-		return NULL;
+		return;
 	}
 
-	/* linkedid is a const char * pointing into the channel struct;
-	 * snapshot under the channel lock so a subsequent destruction
-	 * can't pull the bytes out from under us. */
+	/* Phase 1: ast_channel_bridge_peer's documented contract is
+	 * "no channel locks should be held when calling" — we don't
+	 * hold any here (cisco_session_channel_ref returned us a
+	 * locked-and-unlocked ref'd channel). Bridge_peer returns
+	 * non-NULL only for a 2-party formed bridge. */
+	peer = ast_channel_bridge_peer(local);
+	if (peer) {
+		ast_channel_unref(local);
+		invoke_cb_on_channel(peer, cb, cb_arg);
+		ast_channel_unref(peer);
+		return;
+	}
+
+	/* Phase 2: linkedid walk. Snapshot linkedid under the channel
+	 * lock so a destruction races can't pull the bytes out from
+	 * under us — the const char * returned by ast_channel_linkedid
+	 * lives in the channel struct. */
 	ast_channel_lock(local);
 	ast_copy_string(local_linkedid,
 		S_OR(ast_channel_linkedid(local), ""),
@@ -920,17 +980,20 @@ static struct ast_channel *find_linked_peer(struct ast_channel *local)
 	ast_channel_unlock(local);
 
 	if (ast_strlen_zero(local_linkedid)) {
-		return NULL;
+		ast_channel_unref(local);
+		return;
 	}
 
 	iter = ast_channel_iterator_all_new();
 	if (!iter) {
-		return NULL;
+		ast_channel_unref(local);
+		return;
 	}
 
 	while ((candidate = ast_channel_iterator_next(iter))) {
 		const char *c_linkedid;
 		int match;
+		peer_cb_result rc;
 
 		if (candidate == local) {
 			ast_channel_unref(candidate);
@@ -943,109 +1006,99 @@ static struct ast_channel *find_linked_peer(struct ast_channel *local)
 			&& !strcmp(c_linkedid, local_linkedid);
 		ast_channel_unlock(candidate);
 
-		if (match) {
-			peer = candidate;        /* keep ref */
+		if (!match) {
+			ast_channel_unref(candidate);
+			continue;
+		}
+
+		rc = invoke_cb_on_channel(candidate, cb, cb_arg);
+		ast_channel_unref(candidate);
+		if (rc == PEER_CB_DONE) {
 			break;
 		}
-		ast_channel_unref(candidate);
 	}
 	ast_channel_iterator_destroy(iter);
-	return peer;
-}
-
-/*!
- * \brief Find the peer channel for \a session and execute \a cb under
- *        that channel's lock, passing the cisco_h264_* datastore state
- *        (or NULL if not present).
- *
- * Centralises the ref→find_linked_peer→lock→cb→unlock→unref dance
- * shared by the imageattr-mirror and video-suppress paths.
- *
- * \retval The callback's return value, or \a default_rc if no peer
- *         channel exists (single-leg call, peer leg already torn down,
- *         channel iterator allocation failure).
- */
-typedef int (*peer_state_cb)(const struct cisco_h264_imageattr_state *state,
-	void *cb_arg);
-
-static int with_peer_state(struct ast_sip_session *session,
-	peer_state_cb cb, void *cb_arg, int default_rc)
-{
-	struct ast_channel *local;
-	struct ast_channel *peer;
-	struct ast_datastore *ds;
-	int rc;
-
-	local = cisco_session_channel_ref(session);
-	if (!local) {
-		return default_rc;
-	}
-
-	peer = find_linked_peer(local);
 	ast_channel_unref(local);
-	if (!peer) {
-		return default_rc;
-	}
-
-	ast_channel_lock(peer);
-	ds = ast_channel_datastore_find(peer, &cisco_h264_imageattr_info, NULL);
-	rc = cb(ds ? ds->data : NULL, cb_arg);
-	ast_channel_unlock(peer);
-	ast_channel_unref(peer);
-
-	return rc;
 }
 
-static int peer_imageattr_cb(const struct cisco_h264_imageattr_state *state,
-	void *cb_arg)
+static peer_cb_result peer_imageattr_cb(
+	const struct cisco_h264_imageattr_state *state, void *cb_arg)
 {
 	char **out = cb_arg;
 
 	if (state && state->value) {
 		*out = ast_strdup(state->value);
+		return PEER_CB_DONE;        /* first non-NULL value wins */
 	}
-	return 0;
+	return PEER_CB_CONTINUE;
 }
 
 /*!
- * \brief Dup the bridge peer's stashed H.264 imageattr tuples, or
- *        NULL if none / no peer / peer never sent imageattr. Caller
- *        ast_free()s the result.
+ * \brief Dup the peer's stashed H.264 imageattr tuples, or NULL if
+ *        none / no peer / peer never sent imageattr / all candidates
+ *        were helper channels with no datastore. Caller ast_free()s
+ *        the result.
  */
 static char *cisco_h264_peer_imageattr(struct ast_sip_session *session)
 {
 	char *value = NULL;
 
-	with_peer_state(session, peer_imageattr_cb, &value, 0);
+	with_peer_state(session, peer_imageattr_cb, &value);
 	return value;
 }
 
-static int peer_had_video_cb(const struct cisco_h264_imageattr_state *state,
-	void *cb_arg)
-{
-	(void) cb_arg;
+/*!
+ * \brief Accumulator for the had_video lookup. Walked across every
+ *        viable peer candidate; the final answer is derived after
+ *        the walk completes (any_observed ? any_had_video : -1).
+ */
+struct had_video_acc {
+	int any_observed;
+	int any_had_video;
+};
 
-	if (!state || !state->observed) {
-		return -1;        /* unknown — never parsed peer SDP */
+static peer_cb_result peer_had_video_cb(
+	const struct cisco_h264_imageattr_state *state, void *cb_arg)
+{
+	struct had_video_acc *acc = cb_arg;
+
+	if (state && state->observed) {
+		acc->any_observed = 1;
+		if (state->had_video_media) {
+			acc->any_had_video = 1;
+		}
 	}
-	return state->had_video_media ? 1 : 0;
+	/* Always continue: helper channels (Local;1/;2, parking) share
+	 * linkedid but carry no datastore — we want to walk past them
+	 * and find the real PJSIP peer's observation. The accumulator
+	 * naturally skips state=NULL candidates without polluting the
+	 * answer. */
+	return PEER_CB_CONTINUE;
 }
 
 /*!
- * \brief Did the bridge peer's most-recent incoming SDP carry any
- *        live video media line?
+ * \brief Did at least one peer leg's most-recent incoming SDP carry
+ *        live video media?
  *
- * \retval  1  peer had video media (non-zero port, not inactive).
- * \retval  0  peer's SDP had no video, or only had video on port 0
- *             or a=inactive (RFC 3264 §6 rejected).
- * \retval -1  unknown — either no bridge peer at this moment (call
- *             still mid-setup, e.g. answer hasn't bridged yet) or
- *             peer leg's incoming hook hasn't fired yet. Callers
- *             should treat this as "don't suppress, let it through".
+ * \retval  1  some peer had video. Don't suppress: there's a real
+ *             source to relay.
+ * \retval  0  one or more peers observed, NONE had video. Safe to
+ *             reject our outgoing video stream.
+ * \retval -1  no peer observation at all — either no peer channel
+ *             exists yet, every candidate was a helper channel
+ *             without our datastore, or the peer leg's incoming
+ *             hook hasn't fired. Callers must treat as "leave the
+ *             stream alone" (don't suppress on uncertainty).
  */
 static int cisco_h264_peer_had_video(struct ast_sip_session *session)
 {
-	return with_peer_state(session, peer_had_video_cb, NULL, -1);
+	struct had_video_acc acc = { 0, 0 };
+
+	with_peer_state(session, peer_had_video_cb, &acc);
+	if (!acc.any_observed) {
+		return -1;
+	}
+	return acc.any_had_video ? 1 : 0;
 }
 
 static int add_imageattr(pj_pool_t *pool, pjmedia_sdp_media *media,
