@@ -152,6 +152,14 @@ That file is the configuration reference.
 
 ## Operator CLI
 
+Diagnostic dump (read-only — config + registration + astdb feature state
+for one endpoint, the shape you want when debugging "why don't the BLF
+lamps light?" or "why isn't DND registering?"):
+
+```sh
+asterisk -rx 'pjsip cisco status 1010'
+```
+
 Service control:
 
 ```sh

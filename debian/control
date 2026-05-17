@@ -32,8 +32,8 @@ Description: Cisco Enterprise SIP firmware support for Asterisk chan_pjsip
  .
  Handles Cisco RemoteCC REFER traffic including HLog, MCID, Park,
  ParkMonitor, and Record (StartRecording / StopRecording via MixMonitor)
- softkeys. Phase 1 conference control: a Confrn-built multimix bridge
- with phone-side UI promotion (Conference glyph + un-hold), the Join /
+ softkeys. Conference control: a Confrn-built multimix bridge with
+ phone-side UI promotion (Conference glyph + un-hold), the Join /
  Select / Unselect multi-call merge, RmLastConf, and the ConfList
  participant list with its Mute / Remove / Update action softkeys.
  .
