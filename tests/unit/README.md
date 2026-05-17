@@ -16,13 +16,14 @@ make -C tests/unit unit    # pjlib-linked C tests only
 **smoke** (`smoke.sh`) — sanity checks the files Asterisk's loader will
 look at:
 
-- `doc/res_pjsip_cisco-en_US.xml` parses (xmllint).
+- `obj/res_pjsip_cisco-en_US.xml` parses (xmllint).
   The Makefile harvests `/*** DOCUMENTATION ***/` blocks from
-  `res/*.c` via awk/sed. A malformed block in one file breaks
-  documentation for all ten modules and Asterisk silently refuses
-  to register sorcery types whose `<configObject>` doesn't parse.
+  `res/*.c` and `res/cisco_*/*.c` via awk/sed. A malformed block
+  in one file breaks documentation for all ten modules and Asterisk
+  silently refuses to register sorcery types whose `<configObject>`
+  doesn't parse.
 
-- Each `res/*.so` has `__mod_info`, `load_module`, and
+- Each `obj/*.so` has `__mod_info`, `load_module`, and
   `unload_module` symbols at the locations Asterisk's loader
   resolves via dlsym at registration time. Catches version-script
   regressions (e.g. `local: *;` accidentally hiding the entry
@@ -50,7 +51,7 @@ The harness pattern is in `test_string_utils.c`:
 
 ## What's intentionally NOT covered
 
-Most of the helpers in `res/cisco_*.c` take Asterisk types
+Most of the helpers under `res/cisco_*/` take Asterisk types
 (`struct ast_str`, `ast_sip_session *`, `ast_xml_node *`, `ao2_*`).
 Pulling them into a standalone test binary needs a stub layer for the
 broader Asterisk runtime that `res_pjsip.h` transitively drags in.

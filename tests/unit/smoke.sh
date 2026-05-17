@@ -2,12 +2,13 @@
 # Build-artefact smoke test. Sanity-checks the files Asterisk's loader
 # will actually look at:
 #
-#   1. doc/res_pjsip_cisco-en_US.xml is well-formed XML (the Makefile's
+#   1. obj/res_pjsip_cisco-en_US.xml is well-formed XML (the Makefile's
 #      awk/sed harvester can produce invalid output if a /*** DOCUMENTATION
-#      ***/ block in any res/*.c is malformed; Asterisk silently refuses
-#      to register a sorcery type whose <configObject> doesn't parse).
+#      ***/ block in any source file is malformed; Asterisk silently
+#      refuses to register a sorcery type whose <configObject> doesn't
+#      parse).
 #
-#   2. Each .so in res/ has __mod_info + load_module + unload_module
+#   2. Each .so in obj/ has __mod_info + load_module + unload_module
 #      symbols. The loader dlopens each .so RTLD_LOCAL and dlsym's
 #      __mod_info to find AST_MODULE_INFO; missing symbols here mean
 #      "module silently refuses to register at startup".
@@ -22,7 +23,7 @@ cd "$REPO_ROOT"
 fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }
 
 # 1. XML validity.
-DOC_XML="doc/res_pjsip_cisco-en_US.xml"
+DOC_XML="obj/res_pjsip_cisco-en_US.xml"
 if [[ ! -f "$DOC_XML" ]]; then
 	fail "$DOC_XML not present (run 'make' first)"
 fi
@@ -37,9 +38,9 @@ fi
 printf "  OK   %s\n" "$DOC_XML"
 
 # 2. Each .so has the loader-required symbols.
-SOS=(res/res_pjsip_cisco_*.so)
+SOS=(obj/res_pjsip_cisco_*.so)
 if [[ ${#SOS[@]} -eq 0 || ! -f "${SOS[0]}" ]]; then
-	fail "no .so files in res/ (run 'make' first)"
+	fail "no .so files in obj/ (run 'make' first)"
 fi
 
 for so in "${SOS[@]}"; do

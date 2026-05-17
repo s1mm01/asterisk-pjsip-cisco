@@ -192,14 +192,14 @@ jobs:
                    res_pjsip_cisco_call_extras \
                    res_pjsip_cisco_conference \
                    res_pjsip_cisco_remotecc; do
-            test -f "res/$m.so" || { echo "missing $m.so"; exit 1; }
-            file "res/$m.so" | grep -q "shared object"
+            test -f "obj/$m.so" || { echo "missing $m.so"; exit 1; }
+            file "obj/$m.so" | grep -q "shared object"
           done
 
       - name: verify XML doc generated
         run: |
-          test -f doc/res_pjsip_cisco-en_US.xml
-          xmllint --noout doc/res_pjsip_cisco-en_US.xml
+          test -f obj/res_pjsip_cisco-en_US.xml
+          xmllint --noout obj/res_pjsip_cisco-en_US.xml
 
       - name: smoke test
         # tests/unit/smoke.sh xmllints the generated doc XML (already
