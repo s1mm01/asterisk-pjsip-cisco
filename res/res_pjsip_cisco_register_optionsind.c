@@ -43,9 +43,9 @@
 #include "asterisk/sorcery.h"
 #include "asterisk/res_pjsip.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
-#include "cisco_register.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
+#include "cisco/register.h"
 
 #define CISCO_REMOTECC_OPTIONSIND_BODY                                  \
 	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                  \

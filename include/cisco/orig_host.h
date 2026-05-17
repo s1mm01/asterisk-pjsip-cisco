@@ -16,7 +16,7 @@
  * advertised about itself. Same firmware on a LAN contact accepts
  * the same request bytes.
  *
- * Bodies live in res/cisco_orig_host.c, compiled into
+ * Bodies live in res/res/cisco_endpoint/orig_host.c, compiled into
  * res_pjsip_cisco_endpoint.so. Activated by res_pjsip_cisco_endpoint's
  * load_module; applies to every outbound SIP request that carries an
  * x-ast-orig-host URI parameter on its Request-URI (so it's a no-op

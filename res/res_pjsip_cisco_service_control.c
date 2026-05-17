@@ -38,7 +38,7 @@
  * which were driven from sip_notify.conf templates.
  *
  * Gating: only operates on endpoints that have a [name] type=cisco
- * section (per Phase 1 sorcery in res_pjsip_cisco_endpoint).
+ * sorcery section (defined by res_pjsip_cisco_endpoint).
  *
  * RegisterCallId: the chan_sip patch's restart/reset bodies include
  *   RegisterCallId={<call-id from last REGISTER>}
@@ -74,8 +74,8 @@
 #include "asterisk/res_pjsip.h"
 #include "asterisk/sorcery.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
 
 enum sc_action {
 	SC_CHECK_SYNC,

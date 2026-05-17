@@ -133,8 +133,8 @@
 #include "asterisk/presencestate.h"
 #include "asterisk/res_pjsip.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_orig_host.h"
+#include "cisco/endpoint.h"
+#include "cisco/orig_host.h"
 
 /*
  * Presence-state provider for DND. Lets a BLF hint of the form
@@ -146,7 +146,7 @@
  * patch used SIP/<peer> there. We can't reuse the channel-tech "PJSIP/<id>"
  * spelling for that — core chan_pjsip has no .presencestate callback and we
  * don't patch core — so the hint uses a colon ("PJSIP:1010") to reach this
- * registered provider instead of a slash. cisco_dnd_set() (cisco_endpoint.h)
+ * registered provider instead of a slash. cisco_dnd_set() (cisco/endpoint.h)
  * fires ast_presence_state_changed("PJSIP:<id>") on every toggle so live
  * changes propagate; this callback answers the cold-cache / "core show hints"
  * lookups. Endpoints with no [name] type=cisco section report NOT_SET so the
@@ -190,8 +190,8 @@ static void *cisco_endpoint_alloc(const char *name)
 
 /*
  * Note: cisco_endpoint_get() and the other shared cisco_* helpers are
- * implemented in res/cisco_endpoint.c / cisco_rdata.c / cisco_register.c
- * / cisco_refer.c / cisco_session.c — all compiled into this same .so.
+ * implemented in res/res/cisco_endpoint/endpoint.c / res/cisco_endpoint/rdata.c / res/cisco_endpoint/register.c
+ * / res/cisco_endpoint/refer.c / res/cisco_endpoint/session.c — all compiled into this same .so.
  * Sibling cisco_* modules pick the symbols up via the dynamic symbol
  * table; this module is loaded with AST_MODFLAG_GLOBAL_SYMBOLS so its
  * exports are visible to subsequent dlopens, exactly as stock res_pjsip
@@ -237,7 +237,7 @@ static int load_module(void)
 
 	ast_sorcery_load_object(sorcery, "cisco");
 
-	/* Fatal: cisco_dnd_set() (cisco_endpoint.h) publishes presence
+	/* Fatal: cisco_dnd_set() (cisco/endpoint.h) publishes presence
 	 * changes for "PJSIP:<endpoint>" unconditionally on every toggle,
 	 * which assumes this provider is the canonical answer for that
 	 * label. If registration failed, hint cold-cache lookups would
@@ -255,7 +255,7 @@ static int load_module(void)
 	 * To-URI back to the phone's self-advertised host:port (saved by
 	 * res_pjsip_nat as the x-ast-orig-host URI parameter). No-op when
 	 * the parameter isn't present, so it costs nothing for LAN
-	 * contacts and trunk-bound traffic. See cisco_orig_host.h. */
+	 * contacts and trunk-bound traffic. See cisco/orig_host.h. */
 	if (cisco_orig_host_register()) {
 		ast_log(LOG_ERROR, "cisco_endpoint: could not register "
 			"cisco-orig-host-rewrite pjsip module\n");

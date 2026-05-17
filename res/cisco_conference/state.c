@@ -21,7 +21,7 @@
 #include "asterisk/strings.h"
 #include "asterisk/utils.h"
 
-#include "cisco_conference.h"
+#include "conference_private.h"
 
 int conflist_pending_hash(const void *obj, int flags)
 {

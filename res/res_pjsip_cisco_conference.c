@@ -28,7 +28,7 @@
  *     dialog.
  *   - RmLastConf: remove the most-recently-joined participant from
  *     the conference. Tracks join order via per-channel datastores
- *     attached by cisco_conf_mark_joined() (cisco_session.c) at every
+ *     attached by cisco_conf_mark_joined() (res/cisco_endpoint/session.c) at every
  *     remote-leg ast_bridge_move; the handler finds the channel with
  *     the latest timestamp and ast_bridge_remove()s it. Phone-side
  *     anchors aren't marked, so RmLastConf can't remove the user who
@@ -47,8 +47,8 @@
  *
  * This .c is the module entry point: REFER body classification +
  * dispatch + module load/unload. Implementations live in sibling
- * files (cisco_conf_state.c, cisco_conf_list.c, cisco_conf_confrn.c)
- * sharing declarations via cisco_conference.h, all compiled into the
+ * files (res/cisco_conference/state.c, res/cisco_conference/list.c, res/cisco_conference/confrn.c)
+ * sharing declarations via conference_private.h, all compiled into the
  * same .so.
  */
 
@@ -75,13 +75,13 @@
 #include "asterisk/res_pjsip.h"
 #include "asterisk/sorcery.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
-#include "cisco_refer.h"
-#include "cisco_session.h"
-#include "cisco_conference.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
+#include "cisco/refer.h"
+#include "cisco/session.h"
+#include "conference_private.h"
 
-/* Globals declared in cisco_conference.h; owned by load/unload below. */
+/* Globals declared in conference_private.h; owned by load/unload below. */
 struct ast_taskprocessor *conference_serializer;
 struct ao2_container *conflist_pending_actions;
 struct ao2_container *cisco_selected_calls;

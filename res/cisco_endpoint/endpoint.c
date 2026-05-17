@@ -5,7 +5,7 @@
  *
  * Implements the cisco_endpoint_get accessor and the astdb-backed
  * feature-state accessors (DND, HuntGroup, call-forward-all) declared
- * in cisco_endpoint.h. Linked into res_pjsip_cisco_endpoint.so; the
+ * in cisco/endpoint.h. Linked into res_pjsip_cisco_endpoint.so; the
  * other nine cisco_* modules pick the symbols up via the dynamic
  * symbol table once res_pjsip_cisco_endpoint.so is loaded with
  * AST_MODFLAG_GLOBAL_SYMBOLS (the same pattern stock res_pjsip uses).
@@ -22,7 +22,7 @@
 #include "asterisk/utils.h"
 #include "asterisk/presencestate.h"
 
-#include "cisco_endpoint.h"
+#include "cisco/endpoint.h"
 
 struct cisco_endpoint *cisco_endpoint_get(const char *id)
 {

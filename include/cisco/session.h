@@ -2,11 +2,11 @@
  * Asterisk -- An open source telephony toolkit.
  *
  * Shared session helpers for res_pjsip_cisco_* modules that work
- * with active SIP dialogs. Kept separate from cisco_endpoint.h so
+ * with active SIP dialogs. Kept separate from cisco/endpoint.h so
  * modules that only deal with sorcery / REGISTER-time supplements
  * don't pull in res_pjsip_session and channel.h.
  *
- * Bodies live in res/cisco_session.c, compiled into
+ * Bodies live in res/res/cisco_endpoint/session.c, compiled into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time.
  */

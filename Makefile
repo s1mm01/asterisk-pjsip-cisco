@@ -6,6 +6,21 @@
 # Build:   make
 # Install: sudo make install
 # Remove:  sudo make uninstall
+#
+# Source layout (Asterisk house style):
+#   include/cisco/<X>.h               public cross-.so headers (cisco_*
+#                                     symbols exported from
+#                                     res_pjsip_cisco_endpoint.so)
+#   res/res_pjsip_cisco_<feature>.c   one entry per module (matches .so)
+#   res/res_pjsip_cisco_<feature>.exports   linker --version-script
+#   res/cisco_<feature>/<X>.c         helpers compiled into the matching .so
+#   res/cisco_<feature>/include/<X>_private.h   internal header for this .so
+#
+# Build output:
+#   obj/res_pjsip_cisco_<feature>.o    entry object
+#   obj/res_pjsip_cisco_<feature>/*.o  helper objects
+#   obj/res_pjsip_cisco_<feature>.so   linked module
+#   obj/res_pjsip_cisco-en_US.xml      generated doc XML
 
 # --------------------------------------------------------------------
 # Configurable paths. Override on the command line or in environment
@@ -108,62 +123,67 @@ override CFLAGS      += -fPIC -Wall -Werror -Wno-unused-function \
                         -Wlogical-op -Wduplicated-cond -Wduplicated-branches \
                         -Wvla -Wformat=2 \
                         -I$(ASTERISK_INCLUDE_DIR) \
-                        -Ires \
-                        $(PJPROJECT_CFLAGS) \
-                        -DAST_MODULE_SELF_SYM=__internal_$(basename $(notdir $<))_self
+                        -Iinclude \
+                        $(PJPROJECT_CFLAGS)
 LDFLAGS              ?=
 override LDFLAGS     += -shared
 
 # --------------------------------------------------------------------
-# Modules. Order matters at install/load time only when a module
-# depends on the sorcery type registered by another, but our load_pri
-# settings already handle that.
+# Modules. Each MODULE has a short feature name; the .so install name
+# is res_pjsip_cisco_<feature>.so. Multi-file modules list their
+# helper .c files (basenames, without extension) in
+# <feature>_HELPERS; single-file modules leave that empty.
 # --------------------------------------------------------------------
 
 MODULES := \
-    res_pjsip_cisco_endpoint \
-    res_pjsip_cisco_pidf_body_generator \
-    res_pjsip_cisco_register_optionsind \
-    res_pjsip_cisco_bulkupdate \
-    res_pjsip_cisco_unsolicited_blf \
-    res_pjsip_cisco_service_control \
-    res_pjsip_cisco_feature_events \
-    res_pjsip_cisco_call_extras \
-    res_pjsip_cisco_conference \
-    res_pjsip_cisco_remotecc
+    endpoint \
+    pidf_body_generator \
+    register_optionsind \
+    bulkupdate \
+    unsolicited_blf \
+    service_control \
+    feature_events \
+    call_extras \
+    conference \
+    remotecc
 
-# Helper objects that live INSIDE res_pjsip_cisco_endpoint.so. Other
-# .so files link none of these — they call into the endpoint module's
-# exports at runtime via the dynamic symbol table (the endpoint module
-# is loaded with AST_MODFLAG_GLOBAL_SYMBOLS, matching the stock
-# res_pjsip pattern).
-ENDPOINT_HELPER_OBJS := \
-    res/cisco_endpoint.o \
-    res/cisco_rdata.o \
-    res/cisco_register.o \
-    res/cisco_refer.o \
-    res/cisco_session.o \
-    res/cisco_orig_host.o
+endpoint_HELPERS         := endpoint orig_host rdata refer register session
+bulkupdate_HELPERS       := cli func
+call_extras_HELPERS      := video
+conference_HELPERS       := state list confrn
+feature_events_HELPERS   := dnd mac
+remotecc_HELPERS         := mcid park record
 
-# Helper objects that live INSIDE res_pjsip_cisco_conference.so. Not
-# exported across the module boundary; cisco_conference.h is internal.
-# The conference .so links all four objects together; the conference
-# entry point's pjsip_module + load/unload stays in res_pjsip_cisco_
-# conference.c.
-CONFERENCE_HELPER_OBJS := \
-    res/cisco_conf_state.o \
-    res/cisco_conf_list.o \
-    res/cisco_conf_confrn.o
+# Single-file modules — declared empty for completeness.
+pidf_body_generator_HELPERS  :=
+register_optionsind_HELPERS  :=
+unsolicited_blf_HELPERS      :=
+service_control_HELPERS      :=
 
-OBJS := $(addprefix res/,$(addsuffix .o,$(MODULES))) \
-        $(ENDPOINT_HELPER_OBJS) $(CONFERENCE_HELPER_OBJS)
-SOS  := $(addprefix res/,$(addsuffix .so,$(MODULES)))
+# --------------------------------------------------------------------
+# Per-module object lists and link rules, generated via eval.
+#
+# For each <m> in MODULES:
+#   $(m)_OBJ          = obj/res_pjsip_cisco_<m>.o          (entry)
+#   $(m)_HELPER_OBJS  = obj/res_pjsip_cisco_<m>/<x>.o ...  (helpers)
+#   $(m)_SO           = obj/res_pjsip_cisco_<m>.so         (linked .so)
+# --------------------------------------------------------------------
 
-DOC_XML := doc/res_pjsip_cisco-en_US.xml
+define MODULE_VARS_template
+$(1)_OBJ         := obj/res_pjsip_cisco_$(1).o
+$(1)_HELPER_OBJS := $$(addprefix obj/res_pjsip_cisco_$(1)/,$$(addsuffix .o,$$($(1)_HELPERS)))
+$(1)_SO          := obj/res_pjsip_cisco_$(1).so
+endef
+$(foreach m,$(MODULES),$(eval $(call MODULE_VARS_template,$(m))))
+
+ALL_OBJS := $(foreach m,$(MODULES),$($(m)_OBJ) $($(m)_HELPER_OBJS))
+ALL_SOS  := $(foreach m,$(MODULES),$($(m)_SO))
+
+DOC_XML  := obj/res_pjsip_cisco-en_US.xml
 
 .PHONY: all clean install uninstall doc check check-headers help tests
 
-all: check-headers $(SOS) $(DOC_XML)
+all: check-headers $(ALL_SOS) $(DOC_XML)
 
 # --------------------------------------------------------------------
 # Tests: build-artefact smoke checks + pjlib-linked unit tests. See
@@ -174,69 +194,49 @@ tests: all
 	$(MAKE) -C tests/unit all PJPROJECT_DIR='$(PJPROJECT_DIR)'
 
 # --------------------------------------------------------------------
-# Per-module build rule. AST_MODULE is the C symbol Asterisk uses to
-# tag this module's logger lines; conventionally it matches the .so.
+# Per-module compile + link rules.
+#
+# Entry rule  (per module): obj/res_pjsip_cisco_<m>.o ← res/res_pjsip_cisco_<m>.c
+# Helper rule (per module): obj/res_pjsip_cisco_<m>/%.o ← res/cisco_<m>/%.c
+# Link rule   (per module): obj/res_pjsip_cisco_<m>.so ← obj/res_pjsip_cisco_<m>.o + helpers + exports
+#
+# All three are generated by eval-ing the templates below so each
+# module gets its own correctly-named -DAST_MODULE / -DAST_MODULE_SELF_SYM.
+#
+# All .c files depend on every public header in include/cisco/ and on
+# the module's own internal header (if any). Header-change rebuilds
+# are rare; universal rebuild is the right trade-off.
 # --------------------------------------------------------------------
 
-# Every .o depends on every cisco_*.h — they're small headers and a
-# header change is rare enough that universal rebuild is the right
-# trade-off.
-#
-# Helper objects (cisco_*.c, *not* res_pjsip_cisco_*.c) get more-
-# specific rules below: they're linked into a parent .so and any
-# asterisk macro that expands to AST_MODULE_SELF (e.g.
-# ast_datastore_alloc, ast_calloc_with_stringfields) needs to resolve
-# to the parent module's __internal_..._self symbol, not the helper's
-# own basename. Without the override, helpers using such macros emit
-# unresolved-symbol link errors in the .so.
-#
-# Conference helpers (cisco_conf_*.c) — shorter stem wins in GNU make's
-# pattern rule precedence, so this matches before the broader
-# cisco_%.o rule for these files.
-res/cisco_conf_%.o: res/cisco_conf_%.c $(wildcard res/cisco_*.h)
-	$(CC) $(CFLAGS) \
-	    -UAST_MODULE_SELF_SYM \
-	    -DAST_MODULE_SELF_SYM=__internal_res_pjsip_cisco_conference_self \
-	    -DAST_MODULE=\"res_pjsip_cisco_conference\" \
-	    -c $< -o $@
+ALL_PUBLIC_HDRS := $(wildcard include/cisco/*.h)
 
-# Endpoint helpers (every other cisco_*.c).
-res/cisco_%.o: res/cisco_%.c $(wildcard res/cisco_*.h)
-	$(CC) $(CFLAGS) \
-	    -UAST_MODULE_SELF_SYM \
-	    -DAST_MODULE_SELF_SYM=__internal_res_pjsip_cisco_endpoint_self \
-	    -DAST_MODULE=\"res_pjsip_cisco_endpoint\" \
-	    -c $< -o $@
+define MODULE_RULES_template
+# Entry compile
+obj/res_pjsip_cisco_$(1).o: res/res_pjsip_cisco_$(1).c $$(ALL_PUBLIC_HDRS) $$(wildcard res/cisco_$(1)/include/*.h)
+	@mkdir -p $$(@D)
+	$$(CC) $$(CFLAGS) \
+	    -Ires/cisco_$(1)/include \
+	    -DAST_MODULE_SELF_SYM=__internal_res_pjsip_cisco_$(1)_self \
+	    -DAST_MODULE=\"res_pjsip_cisco_$(1)\" \
+	    -c $$< -o $$@
 
-res/%.o: res/%.c $(wildcard res/cisco_*.h)
-	$(CC) $(CFLAGS) -DAST_MODULE=\"$*\" -c $< -o $@
+# Helper compile (matches any helper in this module's subdir).
+obj/res_pjsip_cisco_$(1)/%.o: res/cisco_$(1)/%.c $$(ALL_PUBLIC_HDRS) $$(wildcard res/cisco_$(1)/include/*.h)
+	@mkdir -p $$(@D)
+	$$(CC) $$(CFLAGS) \
+	    -Ires/cisco_$(1)/include \
+	    -DAST_MODULE_SELF_SYM=__internal_res_pjsip_cisco_$(1)_self \
+	    -DAST_MODULE=\"res_pjsip_cisco_$(1)\" \
+	    -c $$< -o $$@
 
-# Endpoint module: link the entry point + all helper objects, enforce
-# the explicit symbol set via --version-script. cisco_* helpers are
-# exported globally so the other nine .so files can resolve them at
-# load time.
-res/res_pjsip_cisco_endpoint.so: \
-    res/res_pjsip_cisco_endpoint.o $(ENDPOINT_HELPER_OBJS) \
-    res/res_pjsip_cisco_endpoint.exports
-	$(CC) $(LDFLAGS) \
-	    -Wl,--version-script=res/res_pjsip_cisco_endpoint.exports \
-	    -o $@ \
-	    $(filter %.o,$^)
-
-# Conference module: link entry + conference helpers into one .so. The
-# .exports keeps everything local — these helpers don't cross module
-# boundaries.
-res/res_pjsip_cisco_conference.so: \
-    res/res_pjsip_cisco_conference.o $(CONFERENCE_HELPER_OBJS) \
-    res/res_pjsip_cisco_conference.exports
-	$(CC) $(LDFLAGS) \
-	    -Wl,--version-script=res/res_pjsip_cisco_conference.exports \
-	    -o $@ \
-	    $(filter %.o,$^)
-
-# Every other .so: single .o + own .exports that hides everything.
-res/%.so: res/%.o res/%.exports
-	$(CC) $(LDFLAGS) -Wl,--version-script=res/$*.exports -o $@ $<
+# Link: entry .o + helper .o(s) + .exports version-script.
+$$($(1)_SO): $$($(1)_OBJ) $$($(1)_HELPER_OBJS) res/res_pjsip_cisco_$(1).exports
+	$$(CC) $$(LDFLAGS) \
+	    -Wl,--version-script=res/res_pjsip_cisco_$(1).exports \
+	    -o $$@ \
+	    $$(filter %.o,$$^)
+endef
+$(foreach m,$(MODULES),$(eval $(call MODULE_RULES_template,$(m))))
 
 # --------------------------------------------------------------------
 # XML documentation extraction.
@@ -247,12 +247,14 @@ res/%.so: res/%.o res/%.exports
 # block from our sources and assemble them into a single XML file.
 # --------------------------------------------------------------------
 
-$(DOC_XML): res/*.c
-	@mkdir -p doc
+ALL_SOURCES := $(wildcard res/*.c) $(wildcard res/cisco_*/*.c)
+
+$(DOC_XML): $(ALL_SOURCES)
+	@mkdir -p $(@D)
 	@( \
 	  echo '<?xml version="1.0" encoding="UTF-8"?>'; \
 	  echo '<docs xmlns:xi="http://www.w3.org/2001/XInclude">'; \
-	  for f in res/*.c; do \
+	  for f in $(ALL_SOURCES); do \
 	    awk '/\/\*\*\* *DOCUMENTATION/,/\*\*\*\//' $$f \
 	      | sed -e 's@/\*\*\* *DOCUMENTATION@@' -e 's@\*\*\*/@@'; \
 	  done; \
@@ -281,7 +283,7 @@ check-headers:
 
 install: all
 	install -d $(DESTDIR)$(ASTERISK_MODULES_DIR)
-	install -m 0644 $(SOS) $(DESTDIR)$(ASTERISK_MODULES_DIR)/
+	install -m 0644 $(ALL_SOS) $(DESTDIR)$(ASTERISK_MODULES_DIR)/
 	install -d $(DESTDIR)$(ASTERISK_DOC_DIR)
 	install -m 0644 $(DOC_XML) $(DESTDIR)$(ASTERISK_DOC_DIR)/
 	install -d $(DESTDIR)$(ASTERISK_SAMPLE_DIR)
@@ -295,12 +297,12 @@ install: all
 	@echo "     (no modules.conf changes required)"
 
 uninstall:
-	rm -f $(addprefix $(DESTDIR)$(ASTERISK_MODULES_DIR)/,$(addsuffix .so,$(MODULES)))
+	rm -f $(addprefix $(DESTDIR)$(ASTERISK_MODULES_DIR)/res_pjsip_cisco_,$(addsuffix .so,$(MODULES)))
 	rm -f $(DESTDIR)$(ASTERISK_DOC_DIR)/res_pjsip_cisco-en_US.xml
 	rm -rf $(DESTDIR)$(ASTERISK_SAMPLE_DIR)
 
 clean:
-	rm -f $(OBJS) $(SOS) $(DOC_XML)
+	rm -rf obj/
 
 # --------------------------------------------------------------------
 # Convenience: smoke-test load all modules in a running asterisk.
@@ -309,11 +311,11 @@ clean:
 check:
 	@failed=0; \
 	for m in $(MODULES); do \
-	  output=$$(asterisk -rx "module show like $$m" 2>&1); \
+	  output=$$(asterisk -rx "module show like res_pjsip_cisco_$$m" 2>&1); \
 	  if printf '%s\n' "$$output" | grep -q Running; then \
-	    echo "  $$m: Running"; \
+	    echo "  res_pjsip_cisco_$$m: Running"; \
 	  else \
-	    echo "  $$m: NOT RUNNING"; \
+	    echo "  res_pjsip_cisco_$$m: NOT RUNNING"; \
 	    failed=1; \
 	  fi; \
 	done; \
@@ -324,7 +326,7 @@ help:
 	@echo "  make            - build all modules and the doc XML"
 	@echo "  make install    - install modules, docs, and config samples"
 	@echo "  make uninstall  - remove what 'install' put down"
-	@echo "  make clean      - remove build artefacts"
+	@echo "  make clean      - remove build artefacts (rm -rf obj/)"
 	@echo "  make check      - report which modules are loaded in a"
 	@echo "                    running asterisk (run as root)"
 	@echo

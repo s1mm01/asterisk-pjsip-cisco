@@ -1,7 +1,7 @@
 /*
  * Internal header for res_pjsip_cisco_conference.so. Declarations
  * shared across the module's sibling .c files (res_pjsip_cisco_
- * conference.c, cisco_conf_state.c, cisco_conf_list.c, cisco_conf_
+ * conference.c, res/cisco_conference/state.c, res/cisco_conference/list.c, cisco_conf_
  * confrn.c) — all compiled into one .so. Nothing here is exported
  * across module boundaries; the .exports version script keeps the
  * symbol table local.
@@ -95,7 +95,7 @@ extern struct ao2_container *conflist_pending_actions;
 extern struct ao2_container *cisco_selected_calls;
 extern pjsip_module conference_module;
 
-/* cisco_conf_state.c — state container ops + cross-cutting channel
+/* res/cisco_conference/state.c — state container ops + cross-cutting channel
  * helpers shared by ConfList action, Confrn, and Join. */
 int conflist_pending_hash(const void *obj, int flags);
 int conflist_pending_cmp(void *obj, void *arg, int flags);
@@ -125,7 +125,7 @@ void indicate_remote_unhold(struct ast_channel *channel,
 void set_dissolve_on_initiator_hangup(struct ast_channel *channel,
 	const char *endpoint_id);
 
-/* cisco_conf_list.c — ConfList menu + action softkeys. */
+/* res/cisco_conference/list.c — ConfList menu + action softkeys. */
 void queue_conflist(struct ast_sip_endpoint *endpoint,
 	struct ast_sip_contact *contact,
 	const struct conference_dialog_id *dialog_id);
@@ -134,7 +134,7 @@ void queue_conflist_action(struct ast_sip_endpoint *endpoint,
 	const struct conference_dialog_id *dialog_id,
 	const char *user_call_data);
 
-/* cisco_conf_confrn.c — Confrn + Join + RmLastConf. */
+/* res/cisco_conference/confrn.c — Confrn + Join + RmLastConf. */
 pjsip_dialog *conference_open_uas_dialog_and_202(pjsip_rx_data *rdata,
 	const char *endpoint_id);
 void queue_conference(struct ast_sip_endpoint *endpoint,

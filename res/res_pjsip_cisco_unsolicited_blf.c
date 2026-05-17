@@ -57,9 +57,9 @@
 #include "asterisk/res_pjsip_presence_xml.h"
 #include "asterisk/sorcery.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
-#include "cisco_register.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
+#include "cisco/register.h"
 
 static struct ast_taskprocessor *unsolicited_serializer;
 static struct ao2_container *unsolicited_addr_cache;
@@ -552,7 +552,7 @@ struct ext_state_watcher {
 	 * endpoint ids, extension names, or context names — a fixed buffer
 	 * here would silently truncate, mis-hashing the dedupe key and
 	 * letting duplicate watchers register for the same logical pair.
-	 * Same rationale as cisco_addr_cache_entry in cisco_endpoint.h. */
+	 * Same rationale as cisco_addr_cache_entry in cisco/endpoint.h. */
 	char *key;              /* "endpoint_id|extension", for ao2 hash */
 	char *endpoint_id;
 	char *extension;

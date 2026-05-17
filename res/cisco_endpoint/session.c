@@ -3,7 +3,7 @@
  *
  * Shared session helpers for res_pjsip_cisco_* modules that work
  * with active SIP dialogs. Bodies for the declarations in
- * cisco_session.h; linked into res_pjsip_cisco_endpoint.so and
+ * cisco/session.h; linked into res_pjsip_cisco_endpoint.so and
  * resolved by the other cisco_* modules at load time.
  */
 
@@ -22,7 +22,7 @@
 #include "asterisk/time.h"
 #include "asterisk/utils.h"
 
-#include "cisco_session.h"
+#include "cisco/session.h"
 
 struct ast_channel *cisco_session_channel_ref(struct ast_sip_session *session)
 {

@@ -3,7 +3,7 @@
  *
  * URI / transport / XML / media-type / rdata-resolver utilities for the
  * res_pjsip_cisco_* family of modules. Bodies for the declarations in
- * cisco_rdata.h; linked into res_pjsip_cisco_endpoint.so and resolved
+ * cisco/rdata.h; linked into res_pjsip_cisco_endpoint.so and resolved
  * by the other cisco_* modules at load time via the dynamic symbol
  * table.
  */
@@ -22,8 +22,8 @@
 #include "asterisk/utils.h"
 #include "asterisk/xml.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
 
 pjsip_sip_uri *cisco_tdata_from_sip_uri(pjsip_tx_data *tdata)
 {

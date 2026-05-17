@@ -3,30 +3,26 @@
  *
  * res_pjsip_cisco_bulkupdate
  *
- * After a successful REGISTER from a Cisco Enterprise SIP firmware
- * phone (7975 / 8861 / 8865 etc.), send an unsolicited REFER carrying
- * the multipart application/x-cisco-remotecc-request+xml bulkupdate
- * body. This is what classifies each line button as BLF Speed Dial
- * (hook icon) instead of plain Speed Dial (keypad icon) in the
- * firmware's UI.
+ * Post-REGISTER bulkupdate REFER. After every successful REGISTER from
+ * a Cisco endpoint, push a multipart/mixed REFER carrying current DND,
+ * hunt-group, MWI and call-forward state to each registered contact.
+ * Cisco Enterprise SIP firmware consumes this to:
+ *   - paint the per-line MWI lamp
+ *   - mark line buttons as BLF Speed Dial (vs plain Speed Dial)
+ *   - light the CFwdALL indicator
  *
- * Without this REFER, the optionsind body in the REGISTER 200 OK
- * (sent by res_pjsip_cisco_register_optionsind) tells the firmware
- * "this server supports BLF Speed Dial in principle" but the firmware
- * never receives per-line config to act on it. This is the third and
- * final piece of the chan_sip cisco-usecallmanager patch's REGISTER
- * flow. Spec is the patch's
- * channels/sip/peers.c:2824 sip_peer_send_bulk_update.
- *
- * Body sent (one REFER, multipart/mixed body, three parts):
+ * Wire format mirrors the cisco-usecallmanager chan_sip patch's
+ * channels/sip/peers.c sip_peer_send_bulk_update — three sub-bodies
+ * inside multipart/mixed with boundary "uniqueBoundary":
  *
  *   --uniqueBoundary
  *   Content-Type: application/x-cisco-remotecc-request+xml
  *
+ *   <?xml version="1.0" encoding="UTF-8"?>
  *   <x-cisco-remotecc-request>
  *     <dndupdate>
- *       <state>disable</state>
- *       <option>ringeroff</option>
+ *       <state>{enable|disable}</state>
+ *       <option>{ringeroff|callreject}</option>
  *     </dndupdate>
  *   </x-cisco-remotecc-request>
  *
@@ -34,7 +30,9 @@
  *   Content-Type: application/x-cisco-remotecc-request+xml
  *
  *   <x-cisco-remotecc-request>
- *     <hlogupdate><status>off</status></hlogupdate>
+ *     <hlogupdate>
+ *       <status>{on|off}</status>
+ *     </hlogupdate>
  *   </x-cisco-remotecc-request>
  *
  *   --uniqueBoundary
@@ -43,11 +41,11 @@
  *   <x-cisco-remotecc-request>
  *     <bulkupdate>
  *       <contact line="1">
- *         <mwi>no</mwi>
- *         <emwi><voice-msg new="0" old="0" /></emwi>
+ *         <mwi>{yes|no}</mwi>
+ *         <emwi><voice-msg new="N" old="N" /></emwi>
  *         <cfwdallupdate>
- *           <fwdaddress></fwdaddress>
- *           <tovoicemail>off</tovoicemail>
+ *           <fwdaddress>...</fwdaddress>
+ *           <tovoicemail>{on|off}</tovoicemail>
  *         </cfwdallupdate>
  *       </contact>
  *     </bulkupdate>
@@ -65,88 +63,18 @@
  * with outgoing_response and queue a deferred task only for successful
  * REGISTER 200 OK responses. That keeps the REFER tied to a registrar
  * success path and to contacts that have already been updated.
+ *
+ * File layout: this entry owns the body builder, the REGISTER hook,
+ * the send task + serializer, and the queue/resolve/tab-completion
+ * helpers consumed by the per-feature siblings. CLI verbs sit in
+ * res/cisco_bulkupdate/cli.c; CISCO_* dialplan functions sit in
+ * res/cisco_bulkupdate/func.c. See bulkupdate_private.h for the cross-file
+ * surface.
  */
 
 /*** MODULEINFO
 	<depend>res_pjsip</depend>
 	<support_level>extended</support_level>
- ***/
-
-/*** DOCUMENTATION
-	<function name="CISCO_DND" language="en_US">
-		<synopsis>
-			Read or set the Cisco DND state for an endpoint.
-		</synopsis>
-		<syntax>
-			<parameter name="endpoint" required="true">
-				<para>The cisco endpoint id (must have a
-				[name] type=cisco section in pjsip.conf).</para>
-			</parameter>
-		</syntax>
-		<description>
-			<para>Read returns <literal>YES</literal> when DND is
-			enabled, an empty string otherwise.</para>
-			<para>Write accepts any boolean Asterisk understands
-			(<literal>on</literal>/<literal>off</literal>,
-			<literal>yes</literal>/<literal>no</literal>,
-			<literal>1</literal>/<literal>0</literal>,
-			<literal>true</literal>/<literal>false</literal>).
-			Writes update the <literal>DND/&lt;endpoint&gt;</literal>
-			astdb key, fire an
-			<literal>ast_presence_state_changed</literal> on the
-			<literal>PJSIP:&lt;endpoint&gt;</literal> provider so BLF
-			hints whose presence component is
-			<literal>PJSIP:&lt;endpoint&gt;</literal> re-NOTIFY their
-			watchers, and queue a Cisco bulkupdate REFER to the
-			endpoint so its own DND glyph updates without waiting
-			for the next REGISTER.</para>
-			<example title="Server-side DND toggle feature code">
-exten => *78,1,Set(CISCO_DND(${CALLERID(num)})=YES)
- same =>      ,n,Playback(do-not-disturb&amp;activated)
-exten => *79,1,Set(CISCO_DND(${CALLERID(num)})=NO)
- same =>      ,n,Playback(do-not-disturb&amp;de-activated)
-			</example>
-		</description>
-	</function>
-	<function name="CISCO_HUNTGROUP" language="en_US">
-		<synopsis>
-			Read or set the Cisco hunt-group login state for an endpoint.
-		</synopsis>
-		<syntax>
-			<parameter name="endpoint" required="true">
-				<para>The cisco endpoint id.</para>
-			</parameter>
-		</syntax>
-		<description>
-			<para>Read returns <literal>YES</literal> when the
-			endpoint is logged into its hunt group, empty
-			otherwise. Write takes a boolean, updates
-			<literal>HuntGroup/&lt;endpoint&gt;</literal> in astdb,
-			and queues a Cisco bulkupdate REFER so the phone's HLog
-			softkey UI reflects the change.</para>
-		</description>
-	</function>
-	<function name="CISCO_CALLFORWARD" language="en_US">
-		<synopsis>
-			Read or set the Cisco call-forward-all target for an endpoint.
-		</synopsis>
-		<syntax>
-			<parameter name="endpoint" required="true">
-				<para>The cisco endpoint id.</para>
-			</parameter>
-		</syntax>
-		<description>
-			<para>Read returns the current
-			<literal>CF/&lt;endpoint&gt;</literal> target (empty
-			when call-forward is off). Write to a non-empty target
-			to enable forwarding; write an empty value (or any
-			Asterisk-recognised false value: <literal>off</literal>,
-			<literal>no</literal>, <literal>0</literal>,
-			<literal>false</literal>) to clear it. Either way queues
-			a Cisco bulkupdate REFER so the phone's CFwdALL banner
-			updates immediately.</para>
-		</description>
-	</function>
  ***/
 
 #include "asterisk.h"
@@ -159,16 +87,16 @@ exten => *79,1,Set(CISCO_DND(${CALLERID(num)})=NO)
 #include "asterisk/strings.h"
 #include "asterisk/utils.h"
 #include "asterisk/cli.h"
-#include "asterisk/pbx.h"
 #include "asterisk/taskprocessor.h"
 #include "asterisk/astdb.h"
 #include "asterisk/app.h"
 #include "asterisk/res_pjsip.h"
 #include "asterisk/sorcery.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_refer.h"
-#include "cisco_register.h"
+#include "cisco/endpoint.h"
+#include "cisco/refer.h"
+#include "cisco/register.h"
+#include "bulkupdate_private.h"
 
 /*
  * Per-part XML format strings. The three parts together get wrapped
@@ -224,16 +152,6 @@ exten => *79,1,Set(CISCO_DND(${CALLERID(num)})=NO)
 
 static struct ast_taskprocessor *bulkupdate_serializer;
 static struct ao2_container *bulkupdate_addr_cache;
-
-/*!
- * \brief Build a multipart/mixed body with the literal "uniqueBoundary"
- *        boundary, exactly matching what the chan_sip patch sends.
- *
- * Feature-state getters (DND / HuntGroup / CF) live in cisco_endpoint.h
- * as cisco_{dnd,huntgroup,cfwd}_{is_enabled,is_in,get,set}() — same
- * astdb keys, shared with feature_events and remotecc. See README for
- * key conventions.
- */
 
 /*!
  * \brief Aggregate MWI counts for an endpoint by walking its mailboxes=
@@ -333,6 +251,15 @@ static void append_bulk_contact(struct ast_str **out,
 	ast_str_append(out, 0, "%s", contact_buf);
 }
 
+/*!
+ * \brief Build a multipart/mixed body with the literal "uniqueBoundary"
+ *        boundary, exactly matching what the chan_sip patch sends.
+ *
+ * Feature-state getters (DND / HuntGroup / CF) live in cisco/endpoint.h
+ * as cisco_{dnd,huntgroup,cfwd}_{is_enabled,is_in,get,set}() — same
+ * astdb keys, shared with feature_events and remotecc. See README for
+ * key conventions.
+ */
 static pjsip_msg_body *bulkupdate_make_body(pj_pool_t *pool, int dnd_enabled,
 	int dnd_busy, int hg_in, const char *contacts_xml)
 {
@@ -578,127 +505,63 @@ static struct ast_sip_supplement bulkupdate_supplement = {
 	.outgoing_response = bulkupdate_outgoing_response,
 };
 
-/*!
- * \brief CLI: pjsip cisco bulkupdate <endpoint>
- *
- * Manually trigger a fresh bulkupdate REFER to a Cisco endpoint —
- * the same one a successful REGISTER would have produced. Reads
- * current astdb DND / HuntGroup / CF state at send time, so dialplan
- * toggles (e.g. business-hours DND, on-call rotation CFwdALL) that
- * write the astdb keys directly can push the new state to the phone
- * without waiting for the next REGISTER refresh.
- *
- * Most callers should prefer the sibling
- * `pjsip cisco {donotdisturb,huntgroup,callforward} ...` CLIs or the
- * matching `CISCO_DND` / `CISCO_HUNTGROUP` / `CISCO_CALLFORWARD`
- * dialplan functions, which toggle the state AND queue the
- * bulkupdate REFER in one call (and, for DND, also fire the
- * presence-state change so BLF watcher lamps update). This raw
- * command is left in place for the rare cases where an operator has
- * mutated astdb out-of-band and just wants to force a REFER.
- *
- * Mirrors the chan_sip cisco-usecallmanager patch's behaviour where
- * DND / CF state mutations are pushed back to the phone via fresh
- * REFER traffic. The patch fires implicitly from chan_sip's own peer
- * mutation hooks; on PJSIP the source of truth is astdb, which has
- * no built-in change notification, so we expose an explicit trigger
- * instead.
- */
-static char *cli_cisco_bulkupdate(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
+/* ----------------------------------------------------------------------
+ * Shared helpers consumed by the CLI verbs (res/cisco_bulkupdate/cli.c)
+ * and dialplan functions (res/cisco_bulkupdate/func.c). The two siblings
+ * see the bulkupdate task plumbing only through these functions; the
+ * task data struct + send task + serializer + address cache stay
+ * private to this entry .c.
+ * ---------------------------------------------------------------------- */
+
+int cisco_bulkupdate_queue_refer(int fd, struct ast_sip_endpoint *endpoint)
 {
-	struct ast_sip_endpoint *endpoint;
-	struct cisco_endpoint *cisco;
 	struct bulkupdate_task_data *data;
-
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco bulkupdate";
-		e->usage =
-			"Usage: pjsip cisco bulkupdate <endpoint>\n"
-			"   Send a Cisco bulkupdate REFER to <endpoint> carrying the\n"
-			"   current astdb DND / HuntGroup / call-forward state plus\n"
-			"   live MWI counts. Use after dialplan / AMI writes to the\n"
-			"   DND/<endpoint> or CF/<endpoint> astdb keys to push the\n"
-			"   new state to the phone's local UI.\n";
-		return NULL;
-	case CLI_GENERATE:
-		return NULL;
-	}
-
-	if (a->argc != 4) {
-		return CLI_SHOWUSAGE;
-	}
-
-	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(),
-		"endpoint", a->argv[3]);
-	if (!endpoint) {
-		ast_cli(a->fd, "Endpoint '%s' not found\n", a->argv[3]);
-		return CLI_FAILURE;
-	}
-
-	cisco = cisco_endpoint_get(a->argv[3]);
-	if (!cisco) {
-		ast_cli(a->fd, "Endpoint '%s' has no [name] type=cisco "
-			"section in pjsip.conf — bulkupdate not applicable\n",
-			a->argv[3]);
-		ao2_cleanup(endpoint);
-		return CLI_FAILURE;
-	}
-	ao2_cleanup(cisco);
+	const char *endpoint_id = ast_sorcery_object_get_id(endpoint);
 
 	if (ast_strlen_zero(endpoint->aors)) {
-		ast_cli(a->fd, "Endpoint '%s' has no AORs configured\n", a->argv[3]);
-		ao2_cleanup(endpoint);
-		return CLI_FAILURE;
+		ast_cli(fd, "Endpoint '%s' has no AORs configured — feature-state "
+			"change stored but no REFER pushed\n", endpoint_id);
+		return 0;
 	}
-
 	data = ao2_alloc(sizeof(*data), bulkupdate_task_data_destroy);
 	if (!data) {
-		ao2_cleanup(endpoint);
-		return CLI_FAILURE;
+		return -1;
 	}
 	ao2_ref(endpoint, +1);
 	data->endpoint = endpoint;
-
 	if (ast_sip_push_task(bulkupdate_serializer, bulkupdate_send_task, data)) {
-		ast_cli(a->fd, "Failed to queue bulkupdate task for '%s'\n",
-			a->argv[3]);
+		ast_cli(fd, "Failed to queue bulkupdate REFER for '%s'\n",
+			endpoint_id);
 		ao2_cleanup(data);
-		ao2_cleanup(endpoint);
-		return CLI_FAILURE;
+		return -1;
 	}
-
-	ast_cli(a->fd, "Bulkupdate REFER queued for '%s'\n", a->argv[3]);
-	ao2_cleanup(endpoint);
-	return CLI_SUCCESS;
+	return 0;
 }
 
-/* ----------------------------------------------------------------------
- * Feature-state toggle CLIs: pjsip cisco {donotdisturb,huntgroup,callforward}
- * {on,off} <endpoint> [target].
- *
- * Mirror the chan_sip cisco-usecallmanager patch's sip
- * {donotdisturb,huntgroup,callforward} commands
- * (https://usecallmanager.nz/command-line.html). Each one:
- *
- *   1. Resolves and validates the endpoint (must have a [name]
- *      type=cisco section — non-Cisco endpoints are refused).
- *   2. Calls the matching cisco_{dnd,huntgroup,cfwd}_set helper to
- *      update the astdb key. For DND, cisco_dnd_set also fires
- *      ast_presence_state_changed so BLF watchers' lamps update.
- *   3. Queues a bulkupdate REFER back to the phone so its own line
- *      UI (DND glyph / HLog softkey / CFwdALL banner) reflects the
- *      change immediately rather than waiting for the next REGISTER.
- *
- * These live in bulkupdate.c because the REFER push uses
- * bulkupdate_serializer / bulkupdate_send_task directly — keeping the
- * task-queue access in the same .so avoids reaching across module
- * boundaries (no symbol exports between modules; see CLAUDE.md).
- * ---------------------------------------------------------------------- */
+struct ast_sip_endpoint *cisco_bulkupdate_resolve_endpoint(int fd,
+	const char *id)
+{
+	struct ast_sip_endpoint *endpoint;
+	struct cisco_endpoint *cisco;
 
-/* Tab-completion: Nth Cisco endpoint id that starts with \a word. */
-static char *complete_cisco_endpoint(const char *word, int n)
+	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(),
+		"endpoint", id);
+	if (!endpoint) {
+		ast_cli(fd, "Endpoint '%s' not found\n", id);
+		return NULL;
+	}
+	cisco = cisco_endpoint_get(id);
+	if (!cisco) {
+		ast_cli(fd, "Endpoint '%s' has no [name] type=cisco section in "
+			"pjsip.conf\n", id);
+		ao2_cleanup(endpoint);
+		return NULL;
+	}
+	ao2_cleanup(cisco);
+	return endpoint;
+}
+
+char *cisco_bulkupdate_complete_endpoint(const char *word, int n)
 {
 	struct ao2_container *objs;
 	struct ao2_iterator iter;
@@ -729,405 +592,6 @@ static char *complete_cisco_endpoint(const char *word, int n)
 	return ret;
 }
 
-/* Resolve "<endpoint>" from the command line into an endpoint object,
- * verifying it has a [name] type=cisco section. Prints a diagnostic and
- * returns NULL on miss. Caller owns the +1 ref on success. */
-static struct ast_sip_endpoint *cli_resolve_cisco_endpoint(int fd, const char *id)
-{
-	struct ast_sip_endpoint *endpoint;
-	struct cisco_endpoint *cisco;
-
-	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(),
-		"endpoint", id);
-	if (!endpoint) {
-		ast_cli(fd, "Endpoint '%s' not found\n", id);
-		return NULL;
-	}
-	cisco = cisco_endpoint_get(id);
-	if (!cisco) {
-		ast_cli(fd, "Endpoint '%s' has no [name] type=cisco section in "
-			"pjsip.conf\n", id);
-		ao2_cleanup(endpoint);
-		return NULL;
-	}
-	ao2_cleanup(cisco);
-	return endpoint;
-}
-
-/* Queue a bulkupdate REFER for \a endpoint via the existing serializer
- * task path. \a fd is for caller-visible diagnostics. Consumes one ref
- * on endpoint via the task data. Returns 0 on success. */
-static int cli_queue_bulkupdate(int fd, struct ast_sip_endpoint *endpoint)
-{
-	struct bulkupdate_task_data *data;
-	const char *endpoint_id = ast_sorcery_object_get_id(endpoint);
-
-	if (ast_strlen_zero(endpoint->aors)) {
-		ast_cli(fd, "Endpoint '%s' has no AORs configured — feature-state "
-			"change stored but no REFER pushed\n", endpoint_id);
-		return 0;
-	}
-	data = ao2_alloc(sizeof(*data), bulkupdate_task_data_destroy);
-	if (!data) {
-		return -1;
-	}
-	ao2_ref(endpoint, +1);
-	data->endpoint = endpoint;
-	if (ast_sip_push_task(bulkupdate_serializer, bulkupdate_send_task, data)) {
-		ast_cli(fd, "Failed to queue bulkupdate REFER for '%s'\n",
-			endpoint_id);
-		ao2_cleanup(data);
-		return -1;
-	}
-	return 0;
-}
-
-/* DND on/off — argv = ["pjsip","cisco","donotdisturb",{"on"|"off"},<ext>]. */
-static char *cli_cisco_donotdisturb_run(struct ast_cli_args *a, int enable)
-{
-	struct ast_sip_endpoint *endpoint;
-
-	if (a->argc != 5) {
-		return CLI_SHOWUSAGE;
-	}
-	endpoint = cli_resolve_cisco_endpoint(a->fd, a->argv[4]);
-	if (!endpoint) {
-		return CLI_FAILURE;
-	}
-	cisco_dnd_set(a->argv[4], enable);
-	ast_cli(a->fd, "DND %s for endpoint '%s'\n",
-		enable ? "enabled" : "disabled", a->argv[4]);
-	cli_queue_bulkupdate(a->fd, endpoint);
-	ao2_cleanup(endpoint);
-	return CLI_SUCCESS;
-}
-
-static char *cli_cisco_donotdisturb_on(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
-{
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco donotdisturb on";
-		e->usage =
-			"Usage: pjsip cisco donotdisturb on <endpoint>\n"
-			"   Enable DND for <endpoint>. Updates DND/<endpoint> in\n"
-			"   astdb, fires a PJSIP:<endpoint> presence change so BLF\n"
-			"   watcher lamps update, and queues a bulkupdate REFER so\n"
-			"   the phone's own DND glyph turns on.\n";
-		return NULL;
-	case CLI_GENERATE:
-		return a->pos == 4 ? complete_cisco_endpoint(a->word, a->n) : NULL;
-	}
-	return cli_cisco_donotdisturb_run(a, 1);
-}
-
-static char *cli_cisco_donotdisturb_off(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
-{
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco donotdisturb off";
-		e->usage =
-			"Usage: pjsip cisco donotdisturb off <endpoint>\n"
-			"   Disable DND for <endpoint> (counterpart to "
-			"`donotdisturb on`).\n";
-		return NULL;
-	case CLI_GENERATE:
-		return a->pos == 4 ? complete_cisco_endpoint(a->word, a->n) : NULL;
-	}
-	return cli_cisco_donotdisturb_run(a, 0);
-}
-
-/* HuntGroup on/off — argv = ["pjsip","cisco","huntgroup",{"on"|"off"},<ext>]. */
-static char *cli_cisco_huntgroup_run(struct ast_cli_args *a, int login)
-{
-	struct ast_sip_endpoint *endpoint;
-
-	if (a->argc != 5) {
-		return CLI_SHOWUSAGE;
-	}
-	endpoint = cli_resolve_cisco_endpoint(a->fd, a->argv[4]);
-	if (!endpoint) {
-		return CLI_FAILURE;
-	}
-	cisco_huntgroup_set(a->argv[4], login);
-	ast_cli(a->fd, "HuntGroup %s for endpoint '%s'\n",
-		login ? "logged in" : "logged out", a->argv[4]);
-	cli_queue_bulkupdate(a->fd, endpoint);
-	ao2_cleanup(endpoint);
-	return CLI_SUCCESS;
-}
-
-static char *cli_cisco_huntgroup_on(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
-{
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco huntgroup on";
-		e->usage =
-			"Usage: pjsip cisco huntgroup on <endpoint>\n"
-			"   Log <endpoint> into its hunt group (sets HuntGroup/<endpoint>\n"
-			"   in astdb and pushes a bulkupdate REFER so the HLog softkey\n"
-			"   on the phone reflects the change).\n";
-		return NULL;
-	case CLI_GENERATE:
-		return a->pos == 4 ? complete_cisco_endpoint(a->word, a->n) : NULL;
-	}
-	return cli_cisco_huntgroup_run(a, 1);
-}
-
-static char *cli_cisco_huntgroup_off(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
-{
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco huntgroup off";
-		e->usage =
-			"Usage: pjsip cisco huntgroup off <endpoint>\n"
-			"   Log <endpoint> out of its hunt group (counterpart to "
-			"`huntgroup on`).\n";
-		return NULL;
-	case CLI_GENERATE:
-		return a->pos == 4 ? complete_cisco_endpoint(a->word, a->n) : NULL;
-	}
-	return cli_cisco_huntgroup_run(a, 0);
-}
-
-/* Call-forward on <endpoint> <target> / off <endpoint>. */
-static char *cli_cisco_callforward_on(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
-{
-	struct ast_sip_endpoint *endpoint;
-
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco callforward on";
-		e->usage =
-			"Usage: pjsip cisco callforward on <endpoint> <target>\n"
-			"   Set CFwdALL on <endpoint> to ring <target>. Updates\n"
-			"   CF/<endpoint> in astdb and pushes a bulkupdate REFER so\n"
-			"   the phone shows the call-forward banner.\n";
-		return NULL;
-	case CLI_GENERATE:
-		return a->pos == 4 ? complete_cisco_endpoint(a->word, a->n) : NULL;
-	}
-
-	if (a->argc != 6) {
-		return CLI_SHOWUSAGE;
-	}
-	endpoint = cli_resolve_cisco_endpoint(a->fd, a->argv[4]);
-	if (!endpoint) {
-		return CLI_FAILURE;
-	}
-	cisco_cfwd_set(a->argv[4], a->argv[5]);
-	ast_cli(a->fd, "CFwdALL for '%s' set to %s\n", a->argv[4], a->argv[5]);
-	cli_queue_bulkupdate(a->fd, endpoint);
-	ao2_cleanup(endpoint);
-	return CLI_SUCCESS;
-}
-
-static char *cli_cisco_callforward_off(struct ast_cli_entry *e, int cmd,
-	struct ast_cli_args *a)
-{
-	struct ast_sip_endpoint *endpoint;
-
-	switch (cmd) {
-	case CLI_INIT:
-		e->command = "pjsip cisco callforward off";
-		e->usage =
-			"Usage: pjsip cisco callforward off <endpoint>\n"
-			"   Clear CFwdALL on <endpoint> (deletes CF/<endpoint> in\n"
-			"   astdb, pushes a bulkupdate REFER so the phone clears the\n"
-			"   call-forward banner).\n";
-		return NULL;
-	case CLI_GENERATE:
-		return a->pos == 4 ? complete_cisco_endpoint(a->word, a->n) : NULL;
-	}
-
-	if (a->argc != 5) {
-		return CLI_SHOWUSAGE;
-	}
-	endpoint = cli_resolve_cisco_endpoint(a->fd, a->argv[4]);
-	if (!endpoint) {
-		return CLI_FAILURE;
-	}
-	cisco_cfwd_set(a->argv[4], NULL);
-	ast_cli(a->fd, "CFwdALL cleared for '%s'\n", a->argv[4]);
-	cli_queue_bulkupdate(a->fd, endpoint);
-	ao2_cleanup(endpoint);
-	return CLI_SUCCESS;
-}
-
-/* ----------------------------------------------------------------------
- * CISCO_DND / CISCO_HUNTGROUP / CISCO_CALLFORWARD dialplan functions.
- *
- * Same astdb-write semantics as the matching `pjsip cisco …` CLI verbs
- * above — and the write paths also queue a bulkupdate REFER via
- * cli_queue_bulkupdate() so the phone's own DND glyph / HLog softkey /
- * CFwdALL banner reflects the change without waiting for the next
- * REGISTER. cisco_dnd_set() additionally fires
- * ast_presence_state_changed for BLF watchers (cisco_endpoint.h).
- *
- * These live here rather than in res_pjsip_cisco_feature_events (which
- * owns the phone→server SUBSCRIBE/PUBLISH paths) for the same reason
- * the CLI verbs above do: bulkupdate_serializer and bulkupdate_send_task
- * are static to this .so, and CLAUDE.md's "no cross-module symbol
- * exports" convention means the write paths can't reach them from
- * another module.
- *
- * Every write path goes through cisco_func_resolve() which rejects an
- * empty argument and any endpoint id with no [name] type=cisco section.
- * Without that contract a dialplan typo would create orphan
- * DND/<typo> / HuntGroup/<typo> / CF/<typo> astdb entries and (for DND)
- * publish a PJSIP:<typo> presence event that lingers in stasis cache.
- * Reads use cisco_func_validate() (no endpoint object needed).
- * ---------------------------------------------------------------------- */
-
-static int cisco_func_validate(const char *cmd, const char *data)
-{
-	struct cisco_endpoint *cisco;
-
-	if (ast_strlen_zero(data)) {
-		ast_log(LOG_WARNING, "%s requires an endpoint id\n", cmd);
-		return -1;
-	}
-	cisco = cisco_endpoint_get(data);
-	if (!cisco) {
-		ast_log(LOG_WARNING,
-			"%s: endpoint '%s' has no [name] type=cisco section "
-			"in pjsip.conf — refusing to mutate astdb\n", cmd, data);
-		return -1;
-	}
-	ao2_cleanup(cisco);
-	return 0;
-}
-
-/* Validate + retrieve the matching ast_sip_endpoint (caller ao2_cleanups
- * on success; NULL with LOG_WARNING on miss). Write paths need the
- * endpoint object to feed cli_queue_bulkupdate. */
-static struct ast_sip_endpoint *cisco_func_resolve(const char *cmd, const char *data)
-{
-	struct ast_sip_endpoint *endpoint;
-
-	if (cisco_func_validate(cmd, data)) {
-		return NULL;
-	}
-	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(),
-		"endpoint", data);
-	if (!endpoint) {
-		ast_log(LOG_WARNING,
-			"%s: endpoint '%s' has a cisco section but no matching "
-			"type=endpoint section — config drift; astdb update "
-			"skipped\n", cmd, data);
-	}
-	return endpoint;
-}
-
-static int cisco_dnd_func_read(struct ast_channel *chan, const char *cmd,
-	char *data, char *buf, size_t buflen)
-{
-	if (cisco_func_validate(cmd, data)) {
-		return -1;
-	}
-	ast_copy_string(buf, cisco_dnd_is_enabled(data) ? "YES" : "", buflen);
-	return 0;
-}
-
-static int cisco_dnd_func_write(struct ast_channel *chan, const char *cmd,
-	char *data, const char *value)
-{
-	struct ast_sip_endpoint *endpoint = cisco_func_resolve(cmd, data);
-
-	if (!endpoint) {
-		return -1;
-	}
-	cisco_dnd_set(data, ast_true(value));
-	cli_queue_bulkupdate(-1, endpoint);
-	ao2_cleanup(endpoint);
-	return 0;
-}
-
-static struct ast_custom_function cisco_dnd_function = {
-	.name  = "CISCO_DND",
-	.read  = cisco_dnd_func_read,
-	.write = cisco_dnd_func_write,
-};
-
-static int cisco_huntgroup_func_read(struct ast_channel *chan, const char *cmd,
-	char *data, char *buf, size_t buflen)
-{
-	if (cisco_func_validate(cmd, data)) {
-		return -1;
-	}
-	ast_copy_string(buf, cisco_huntgroup_is_in(data) ? "YES" : "", buflen);
-	return 0;
-}
-
-static int cisco_huntgroup_func_write(struct ast_channel *chan, const char *cmd,
-	char *data, const char *value)
-{
-	struct ast_sip_endpoint *endpoint = cisco_func_resolve(cmd, data);
-
-	if (!endpoint) {
-		return -1;
-	}
-	cisco_huntgroup_set(data, ast_true(value));
-	cli_queue_bulkupdate(-1, endpoint);
-	ao2_cleanup(endpoint);
-	return 0;
-}
-
-static struct ast_custom_function cisco_huntgroup_function = {
-	.name  = "CISCO_HUNTGROUP",
-	.read  = cisco_huntgroup_func_read,
-	.write = cisco_huntgroup_func_write,
-};
-
-static int cisco_cfwd_func_read(struct ast_channel *chan, const char *cmd,
-	char *data, char *buf, size_t buflen)
-{
-	if (cisco_func_validate(cmd, data)) {
-		return -1;
-	}
-	cisco_cfwd_get(data, buf, buflen);
-	return 0;
-}
-
-static int cisco_cfwd_func_write(struct ast_channel *chan, const char *cmd,
-	char *data, const char *value)
-{
-	struct ast_sip_endpoint *endpoint = cisco_func_resolve(cmd, data);
-
-	if (!endpoint) {
-		return -1;
-	}
-	/* Treat empty / false-y values as clear; anything else is the
-	 * forward target. ast_false catches off/no/0/false; an empty
-	 * string falls into the same bucket via ast_strlen_zero. */
-	cisco_cfwd_set(data,
-		(ast_strlen_zero(value) || ast_false(value)) ? NULL : value);
-	cli_queue_bulkupdate(-1, endpoint);
-	ao2_cleanup(endpoint);
-	return 0;
-}
-
-static struct ast_custom_function cisco_cfwd_function = {
-	.name  = "CISCO_CALLFORWARD",
-	.read  = cisco_cfwd_func_read,
-	.write = cisco_cfwd_func_write,
-};
-
-static struct ast_cli_entry bulkupdate_cli_cmds[] = {
-	AST_CLI_DEFINE(cli_cisco_bulkupdate,
-		"Push a fresh Cisco bulkupdate REFER (DND/CF/MWI state)"),
-	AST_CLI_DEFINE(cli_cisco_donotdisturb_on,  "Enable Cisco DND for an endpoint"),
-	AST_CLI_DEFINE(cli_cisco_donotdisturb_off, "Disable Cisco DND for an endpoint"),
-	AST_CLI_DEFINE(cli_cisco_huntgroup_on,     "Log a Cisco endpoint into its hunt group"),
-	AST_CLI_DEFINE(cli_cisco_huntgroup_off,    "Log a Cisco endpoint out of its hunt group"),
-	AST_CLI_DEFINE(cli_cisco_callforward_on,   "Set Cisco CFwdALL target for an endpoint"),
-	AST_CLI_DEFINE(cli_cisco_callforward_off,  "Clear Cisco CFwdALL on an endpoint"),
-};
-
 static int load_module(void)
 {
 	bulkupdate_serializer = ast_sip_create_serializer("pjsip/cisco-bulkupdate");
@@ -1141,24 +605,8 @@ static int load_module(void)
 		return AST_MODULE_LOAD_DECLINE;
 	}
 	ast_sip_register_supplement(&bulkupdate_supplement);
-	ast_cli_register_multiple(bulkupdate_cli_cmds,
-		ARRAY_LEN(bulkupdate_cli_cmds));
-
-	/* Dialplan functions are non-fatal: the supplement + CLI verbs are
-	 * the module's main job and stay live even if pbx-function
-	 * registration trips. Any failure here is logged at WARNING and
-	 * the partial set rolled back. */
-	if (ast_custom_function_register(&cisco_dnd_function)
-		|| ast_custom_function_register(&cisco_huntgroup_function)
-		|| ast_custom_function_register(&cisco_cfwd_function)) {
-		ast_custom_function_unregister(&cisco_cfwd_function);
-		ast_custom_function_unregister(&cisco_huntgroup_function);
-		ast_custom_function_unregister(&cisco_dnd_function);
-		ast_log(LOG_WARNING,
-			"cisco-bulkupdate: failed to register CISCO_* dialplan "
-			"functions; CLI verbs still work\n");
-	}
-
+	cisco_bulkupdate_cli_init();
+	cisco_bulkupdate_funcs_init();
 	return AST_MODULE_LOAD_SUCCESS;
 }
 
@@ -1178,11 +626,8 @@ static int unload_module(void)
 	if (!ast_shutdown_final()) {
 		return -1;
 	}
-	ast_custom_function_unregister(&cisco_cfwd_function);
-	ast_custom_function_unregister(&cisco_huntgroup_function);
-	ast_custom_function_unregister(&cisco_dnd_function);
-	ast_cli_unregister_multiple(bulkupdate_cli_cmds,
-		ARRAY_LEN(bulkupdate_cli_cmds));
+	cisco_bulkupdate_funcs_shutdown();
+	cisco_bulkupdate_cli_shutdown();
 	ast_sip_unregister_supplement(&bulkupdate_supplement);
 	ao2_cleanup(bulkupdate_addr_cache);
 	bulkupdate_addr_cache = NULL;

@@ -3,7 +3,7 @@
  *
  * Out-of-band Cisco RemoteCC REFER + multipart-body sending helpers
  * for the res_pjsip_cisco_* family. Bodies for the declarations in
- * cisco_refer.h; linked into res_pjsip_cisco_endpoint.so and resolved
+ * cisco/refer.h; linked into res_pjsip_cisco_endpoint.so and resolved
  * by the other cisco_* modules at load time.
  */
 
@@ -19,7 +19,7 @@
 #include "asterisk/strings.h"
 #include "asterisk/utils.h"
 
-#include "cisco_refer.h"
+#include "cisco/refer.h"
 
 int cisco_endpoint_send_refer_to_contact(
 	struct ast_sip_endpoint *endpoint, struct ast_sip_contact *contact,

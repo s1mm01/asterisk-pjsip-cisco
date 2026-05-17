@@ -18,7 +18,7 @@
  *
  * RmLastConf:
  *   Walks the per-channel join-time datastore (set by
- *   cisco_conf_mark_joined in cisco_session.c at every remote-leg
+ *   cisco_conf_mark_joined in res/cisco_endpoint/session.c at every remote-leg
  *   ast_bridge_move) to find the participant with the latest
  *   timestamp, then ast_bridge_remove()s it.
  */
@@ -41,11 +41,11 @@
 #include "asterisk/res_pjsip_session.h"
 #include "asterisk/sorcery.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
-#include "cisco_refer.h"
-#include "cisco_session.h"
-#include "cisco_conference.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
+#include "cisco/refer.h"
+#include "cisco/session.h"
+#include "conference_private.h"
 
 /* ----------------------------------------------------------------------
  * Shared: pick the bridge's video routing mode.
@@ -402,10 +402,14 @@ static int conference_send_task(void *obj)
 	/* MULTIMIX | NATIVE: softmix mixer with native pass-through where
 	 * possible. SMART: let the bridging framework auto-promote tech as
 	 * channel count changes. DISSOLVE_EMPTY: tear down when the last
-	 * channel leaves. No DISSOLVE_HANGUP — we want the mix to keep
-	 * going if the initiator hangs up (cisco_keep_conference=yes
-	 * implicit for Phase 1; configurable later). TRANSFER_BRIDGE_ONLY:
-	 * don't let an attended-transfer-into-conference race the merge. */
+	 * channel leaves. No DISSOLVE_HANGUP at the bridge level — the
+	 * initiator-hangup behaviour is decided per call by the endpoint's
+	 * keep_conference sorcery field: keep_conference=no (default) calls
+	 * set_dissolve_on_initiator_hangup to flip DISSOLVE_HANGUP on
+	 * chan_phone_a's bridge_channel; keep_conference=yes leaves it
+	 * unflagged so the mix survives the initiator dropping.
+	 * TRANSFER_BRIDGE_ONLY: don't let an attended-transfer-into-
+	 * conference race the merge. */
 	conf = ast_bridge_base_new(
 		AST_BRIDGE_CAPABILITY_MULTIMIX | AST_BRIDGE_CAPABILITY_NATIVE,
 		AST_BRIDGE_FLAG_DISSOLVE_EMPTY | AST_BRIDGE_FLAG_SMART

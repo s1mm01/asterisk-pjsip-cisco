@@ -109,10 +109,10 @@ require patching Asterisk core). Existence of a `[name] type=cisco`
 section is the gating signal for every other module.
 
 `cisco_endpoint_get()` and the other shared `cisco_*` helpers are
-declared in `res/cisco_endpoint.h` / `cisco_rdata.h` / `cisco_register.h`
-/ `cisco_refer.h` / `cisco_session.h` / `cisco_orig_host.h` and defined
-in their sibling `.c` files. All six `.c` files are compiled into
-`res_pjsip_cisco_endpoint.so`, which carries `AST_MODFLAG_GLOBAL_SYMBOLS`
+declared in `include/cisco/endpoint.h` / `rdata.h` / `register.h` /
+`refer.h` / `session.h` / `orig_host.h` and defined in the matching
+`.c` files under `res/cisco_endpoint/`. All six `.c` files are compiled
+into `res_pjsip_cisco_endpoint.so`, which carries `AST_MODFLAG_GLOBAL_SYMBOLS`
 so its `cisco_*` exports (controlled by `res/res_pjsip_cisco_endpoint.exports`)
 are visible to every other module at load time. Same pattern stock
 `res_pjsip.so` uses to publish `ast_sip_*` to every PJSIP submodule.
@@ -131,7 +131,7 @@ callback and this project doesn't patch core. Non-Cisco endpoints
 report `NOT_SET` so the provider is inert for non-Cisco peers.
 
 A third registration: `cisco_orig_host_register()` (from
-`cisco_orig_host.c`) installs a global `pjsip_module` whose
+`res/cisco_endpoint/orig_host.c`) installs a global `pjsip_module` whose
 `on_tx_request` callback rewrites Request-URI and To-URI host:port
 back to the phone's self-advertised contact host whenever
 `res_pjsip_nat` has left an `x-ast-orig-host` URI parameter on the
@@ -323,9 +323,27 @@ parses `<softkeyeventmsg>` and implements HLog by toggling
 `HuntGroup/<endpoint>` in astdb, then sending a `<hlogupdate>` REFER
 back to registered contacts. MCID resolves the supplied `<dialogid>`
 via PJSIP's native `pjsip_ua_find_dialog` (through the shared
-`cisco_dialog_session_lookup` helper in `cisco_session.h`), queues
+`cisco_dialog_session_lookup` helper in `cisco/session.h`), queues
 `AST_CONTROL_MCID` on the matched channel when the call is bridged,
 and sends Cisco statusline/tone feedback REFERs.
+
+The module entry + dispatch live in `res/res_pjsip_cisco_remotecc.c`;
+per-feature handlers (MCID, Park/ParkMonitor, StartRecording/
+StopRecording) sit in sibling `res/cisco_remotecc/{mcid,park,record}.c`
+compiled into the same `.so`. Same pattern as
+`res_pjsip_cisco_conference.so`; nothing exported across module
+boundaries (the `.exports` script keeps the internal `handle_*`
+symbols local).
+
+**res_parking is optional.** The parking symbols (`ast_parking_topic`,
+`ast_parked_call_type`, `ast_parking_is_exten_park`) live in the
+asterisk binary itself, not `res_parking.so`, so this module links and
+loads cleanly without `res_parking`. `handle_park` gates on
+`ast_module_check("res_parking.so")` and returns `501` (Not
+Implemented) when it isn't loaded — so MCID / HLog / Record / softkey
+dispatch all continue to work on a deployment that intentionally omits
+`res_parking`. Declared via `.optional_modules = "res_parking"` so the
+Asterisk loader orders `res_parking` before us when it IS configured.
 
 **Park / ParkMonitor.** The softkey REFER carries `<dialogid>` for the
 call to park; `handle_park` resolves it to the phone's channel + its
@@ -410,6 +428,14 @@ capability negotiation or propagate it to a non-Cisco channel. Full
 parity would require core/PJSIP SDP changes, not just another Cisco
 supplement.
 
+The module entry + supplement registrations + header-decoration code
+(Call-Info, RPID, Conference identity, Supported) live in
+`res_pjsip_cisco_call_extras.c`; the H.264 SDP hints and the
+phantom-video suppression datastore — including the two-phase
+peer-channel walker — sit in `res/cisco_call_extras/video.c`, compiled
+into the same `.so`. Same pattern as the conference and remotecc modules; the
+`.exports` script keeps everything local.
+
 ### res_pjsip_cisco_conference
 
 Cisco RemoteCC conference control. Hooks into the same incoming-REFER
@@ -421,7 +447,7 @@ conference-family softkey REFERs; everything else falls through to
 
 Resolves the XML `<dialogid>` on every REFER to an `ast_sip_session`
 via the shared `cisco_dialog_session_lookup` helper (in
-`cisco_session.h`, wrapping `pjsip_ua_find_dialog` +
+`cisco/session.h`, wrapping `pjsip_ua_find_dialog` +
 `ast_sip_dialog_get_session`), independent of the remotecc dialog
 registry — no cross-module symbol export needed.
 
@@ -455,7 +481,7 @@ single OOB REFER with `<notifyreq><feature>Join</feature>
 **RmLastConf** — remove the most-recently-joined participant. Track
 join order via a per-channel timestamp datastore attached at every
 remote-leg `ast_bridge_move` (helpers `cisco_conf_mark_joined()` /
-`cisco_conf_find_last_joined()` in `cisco_session.c`). The handler
+`cisco_conf_find_last_joined()` in `res/cisco_endpoint/session.c`). The handler
 resolves the REFER's `<dialogid>` to the phone's session → channel →
 bridge, picks the tracked channel with the latest timestamp
 (excluding the phone's own anchor, which isn't marked), and

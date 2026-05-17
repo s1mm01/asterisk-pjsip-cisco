@@ -4,18 +4,18 @@
  * URI / transport / XML / media-type / rdata-resolver utilities for the
  * res_pjsip_cisco_* family of modules.
  *
- * Lives separately from cisco_endpoint.h so modules that only need the
+ * Lives separately from cisco/endpoint.h so modules that only need the
  * sorcery struct + DND/HuntGroup/CF accessors don't pull in libxml2 +
  * pjsip multipart + transport-state plumbing. The pjsip_module on_rx_request
  * gate (cisco_pjsip_module_match) and the multipart Cisco RemoteCC request
  * body locator live here too — both are rdata-shaped helpers consumed by
  * the modules that hook incoming SIP requests.
  *
- * Bodies live in res/cisco_rdata.c, compiled into
+ * Bodies live in res/res/cisco_endpoint/rdata.c, compiled into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time.
  *
- * Depends on cisco_endpoint.h for cisco_endpoint_get (the Cisco-flag check
+ * Depends on cisco/endpoint.h for cisco_endpoint_get (the Cisco-flag check
  * inside cisco_pjsip_module_match).
  */
 
@@ -30,7 +30,7 @@
 #include "asterisk/res_pjsip.h"
 #include "asterisk/xml.h"
 
-#include "cisco_endpoint.h"
+#include "cisco/endpoint.h"
 
 /*!
  * \brief Return the SIP URI inside an outgoing request's From header.

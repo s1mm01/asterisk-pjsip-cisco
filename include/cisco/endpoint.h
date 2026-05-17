@@ -7,15 +7,15 @@
  * and the astdb-backed feature-state accessors (DND, HuntGroup,
  * call-forward-all) that the dialplan, feature-event SUBSCRIBE handler,
  * bulkupdate, and PIDF body builders all share as their single source
- * of truth. Bodies live in res/cisco_endpoint.c, compiled into
+ * of truth. Bodies live in res/res/cisco_endpoint/endpoint.c, compiled into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time via the dynamic symbol table (the endpoint
  * module is loaded with AST_MODFLAG_GLOBAL_SYMBOLS — same pattern stock
  * res_pjsip uses to export ast_sip_*).
  *
- * URI / XML / rdata utilities live in cisco_rdata.h; REGISTER 200-OK
- * address-change tracking in cisco_register.h; OOB REFER + multipart
- * sending in cisco_refer.h; session / dialog lookup in cisco_session.h.
+ * URI / XML / rdata utilities live in cisco/rdata.h; REGISTER 200-OK
+ * address-change tracking in cisco/register.h; OOB REFER + multipart
+ * sending in cisco/refer.h; session / dialog lookup in cisco/session.h.
  * Each of those includes this one (or transitively does so) for the
  * cisco_endpoint_get gating check.
  *

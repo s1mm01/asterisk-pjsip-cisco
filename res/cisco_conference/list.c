@@ -35,11 +35,11 @@
 #include "asterisk/res_pjsip.h"
 #include "asterisk/sorcery.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
-#include "cisco_refer.h"
-#include "cisco_session.h"
-#include "cisco_conference.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
+#include "cisco/refer.h"
+#include "cisco/session.h"
+#include "conference_private.h"
 
 /* Header of the multipart REFER body we send back: a datapassthroughreq
  * echo so the phone correlates the response with its ConfList request,

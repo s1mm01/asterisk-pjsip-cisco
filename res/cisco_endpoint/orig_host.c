@@ -3,7 +3,7 @@
  *
  * Implementation of the cisco_orig_host on_tx_request hook.
  *
- * See cisco_orig_host.h for the rationale (why this is needed and
+ * See cisco/orig_host.h for the rationale (why this is needed and
  * where x-ast-orig-host comes from).
  *
  * Compiled into res_pjsip_cisco_endpoint.so; activated by the
@@ -18,7 +18,7 @@
 #include "asterisk/module.h"
 #include "asterisk/res_pjsip.h"
 
-#include "cisco_orig_host.h"
+#include "cisco/orig_host.h"
 
 /*
  * Parse "host:port" (or bare "host") out of a URI parameter value,

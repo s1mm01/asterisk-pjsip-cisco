@@ -4,7 +4,7 @@
  * REGISTER 200-OK address-change tracking for the res_pjsip_cisco_*
  * supplements (optionsind / bulkupdate / unsolicited_blf).
  *
- * Bodies for the declarations in cisco_register.h. Linked into
+ * Bodies for the declarations in cisco/register.h. Linked into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time via the dynamic symbol table.
  *
@@ -26,8 +26,8 @@
 #include "asterisk/strings.h"
 #include "asterisk/utils.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_register.h"
+#include "cisco/endpoint.h"
+#include "cisco/register.h"
 
 int cisco_response_registers_contact(pjsip_msg *msg)
 {

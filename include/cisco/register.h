@@ -11,11 +11,11 @@
  * parse_register_contact — see the section comment on
  * cisco_register_address_changed below for the lifecycle.
  *
- * Bodies live in res/cisco_register.c, compiled into
+ * Bodies live in res/res/cisco_endpoint/register.c, compiled into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time.
  *
- * Depends on cisco_rdata.h (and through it cisco_endpoint.h):
+ * Depends on cisco/rdata.h (and through it cisco/endpoint.h):
  * cisco_register_should_fire calls cisco_endpoint_get to gate on the
  * Cisco flag, and the helpers here are shaped around pjsip_msg /
  * pjsip_tx_data plumbing exposed by the response hook.
@@ -31,8 +31,8 @@
 #include "asterisk/res_pjsip.h"
 #include "asterisk/strings.h"
 
-#include "cisco_endpoint.h"
-#include "cisco_rdata.h"
+#include "cisco/endpoint.h"
+#include "cisco/rdata.h"
 
 /*!
  * \brief Did this REGISTER 200 OK actually register a contact?

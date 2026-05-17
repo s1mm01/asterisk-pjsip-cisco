@@ -12,17 +12,17 @@
  * resolved from the inbound rdata's source IP:port). Both shapes live
  * here.
  *
- * Lives separately from cisco_endpoint.h so modules that only deal with
+ * Lives separately from cisco/endpoint.h so modules that only deal with
  * sorcery / REGISTER-time supplements don't compile in the multipart
  * machinery — and so the multipart-add helper sits next to the REFER
  * sender that drives it.
  *
- * Bodies live in res/cisco_refer.c, compiled into
+ * Bodies live in res/res/cisco_endpoint/refer.c, compiled into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time.
  *
- * Depends on cisco_endpoint.h transitively (the helpers take
- * struct ast_sip_endpoint *), but does not require cisco_rdata.h.
+ * Depends on cisco/endpoint.h transitively (the helpers take
+ * struct ast_sip_endpoint *), but does not require cisco/rdata.h.
  */
 
 #ifndef _RES_PJSIP_CISCO_REFER_H

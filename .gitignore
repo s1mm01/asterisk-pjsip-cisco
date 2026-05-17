@@ -1,7 +1,5 @@
 # Build artefacts
-res/*.o
-res/*.so
-doc/res_pjsip_cisco-en_US.xml
+obj/
 tests/unit/*.o
 tests/unit/test_*
 !tests/unit/test_*.c
