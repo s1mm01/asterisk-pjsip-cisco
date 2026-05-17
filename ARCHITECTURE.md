@@ -506,10 +506,10 @@ visibility fight on every Asterisk minor.
 
 Asterisk's strict sorcery validator demands a `<configObject>` match
 in some `*-en_US.xml` file under `/var/lib/asterisk/documentation/`
-before it'll accept field registrations. We extract every
-`/*** DOCUMENTATION ... ***/` block from the source files into
-`doc/res_pjsip_cisco-en_US.xml` at build time. `make install`
-copies that to `$(ASTERISK_DOC_DIR)`.
+before it'll accept field registrations. The Makefile extracts every
+`/*** DOCUMENTATION ... ***/` block from `res/*.c` and
+`res/cisco_*/*.c` into `obj/doc/res_pjsip_cisco-en_US.xml` at build
+time. `make install` copies that to `$(ASTERISK_DOC_DIR)`.
 
 ## Wire format reference
 

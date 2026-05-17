@@ -9,9 +9,9 @@ Ten out-of-tree Asterisk shared modules (`res_pjsip_cisco_*`) that bolt Cisco En
 ## Build & development commands
 
 ```sh
-make                      # build all .so + regen doc/res_pjsip_cisco-en_US.xml
-make clean
-sudo make install         # to ASTERISK_MODULES_DIR / ASTERISK_DOC_DIR / ASTERISK_SAMPLE_DIR
+make                      # build all .so into obj/ + regen obj/doc/res_pjsip_cisco-en_US.xml
+make clean                # rm -rf obj/
+sudo make install         # obj/*.so -> ASTERISK_MODULES_DIR, obj/doc/*.xml -> ASTERISK_DOC_DIR, conf-samples -> ASTERISK_SAMPLE_DIR
 sudo make uninstall
 sudo make check           # runtime: queries a running asterisk for "module show like cisco_"
 dpkg-buildpackage -us -uc -b -d   # Debian packaging (-d skips Build-Depends not on stock Ubuntu)
@@ -70,7 +70,7 @@ The grouping into topical headers (rather than one big shared `.h`) is for reada
 
 ### XML documentation
 
-Asterisk's strict sorcery validator demands a matching `<configObject>` in some XML file under `$ASTERISK_DOC_DIR` before it will accept field registrations. The Makefile harvests every `/*** DOCUMENTATION ... ***/` block from `res/*.c`, concatenates them into `doc/res_pjsip_cisco-en_US.xml`, and `make install` deploys it. **When you add or rename a sorcery field, the matching `<configOption>` block in the source file is mandatory** — Asterisk will refuse to load the module otherwise.
+Asterisk's strict sorcery validator demands a matching `<configObject>` in some XML file under `$ASTERISK_DOC_DIR` before it will accept field registrations. The Makefile harvests every `/*** DOCUMENTATION ... ***/` block from `res/*.c` and `res/cisco_*/*.c`, concatenates them into `obj/doc/res_pjsip_cisco-en_US.xml`, and `make install` deploys it. **When you add or rename a sorcery field, the matching `<configOption>` block in the source file is mandatory** — Asterisk will refuse to load the module otherwise.
 
 ### Hook style for REGISTER-driven behaviour
 
