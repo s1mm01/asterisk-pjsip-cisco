@@ -198,8 +198,8 @@ jobs:
 
       - name: verify XML doc generated
         run: |
-          test -f obj/res_pjsip_cisco-en_US.xml
-          xmllint --noout obj/res_pjsip_cisco-en_US.xml
+          test -f obj/doc/res_pjsip_cisco-en_US.xml
+          xmllint --noout obj/doc/res_pjsip_cisco-en_US.xml
 
       - name: smoke test
         # tests/unit/smoke.sh xmllints the generated doc XML (already

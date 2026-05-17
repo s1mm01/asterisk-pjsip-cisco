@@ -17,10 +17,10 @@
 #   res/cisco_<feature>/include/<X>_private.h   internal header for this .so
 #
 # Build output:
-#   obj/res_pjsip_cisco_<feature>.o    entry object
-#   obj/res_pjsip_cisco_<feature>/*.o  helper objects
-#   obj/res_pjsip_cisco_<feature>.so   linked module
-#   obj/res_pjsip_cisco-en_US.xml      generated doc XML
+#   obj/res_pjsip_cisco_<feature>.o        entry object
+#   obj/res_pjsip_cisco_<feature>/*.o      helper objects
+#   obj/res_pjsip_cisco_<feature>.so       linked module
+#   obj/doc/res_pjsip_cisco-en_US.xml      generated doc XML
 
 # --------------------------------------------------------------------
 # Configurable paths. Override on the command line or in environment
@@ -179,7 +179,7 @@ $(foreach m,$(MODULES),$(eval $(call MODULE_VARS_template,$(m))))
 ALL_OBJS := $(foreach m,$(MODULES),$($(m)_OBJ) $($(m)_HELPER_OBJS))
 ALL_SOS  := $(foreach m,$(MODULES),$($(m)_SO))
 
-DOC_XML  := obj/res_pjsip_cisco-en_US.xml
+DOC_XML  := obj/doc/res_pjsip_cisco-en_US.xml
 
 .PHONY: all clean install uninstall doc check check-headers help tests
 

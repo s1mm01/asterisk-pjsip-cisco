@@ -2,7 +2,7 @@
 # Build-artefact smoke test. Sanity-checks the files Asterisk's loader
 # will actually look at:
 #
-#   1. obj/res_pjsip_cisco-en_US.xml is well-formed XML (the Makefile's
+#   1. obj/doc/res_pjsip_cisco-en_US.xml is well-formed XML (the Makefile's
 #      awk/sed harvester can produce invalid output if a /*** DOCUMENTATION
 #      ***/ block in any source file is malformed; Asterisk silently
 #      refuses to register a sorcery type whose <configObject> doesn't
@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }
 
 # 1. XML validity.
-DOC_XML="obj/res_pjsip_cisco-en_US.xml"
+DOC_XML="obj/doc/res_pjsip_cisco-en_US.xml"
 if [[ ! -f "$DOC_XML" ]]; then
 	fail "$DOC_XML not present (run 'make' first)"
 fi

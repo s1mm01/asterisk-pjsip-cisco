@@ -16,7 +16,7 @@ make -C tests/unit unit    # pjlib-linked C tests only
 **smoke** (`smoke.sh`) — sanity checks the files Asterisk's loader will
 look at:
 
-- `obj/res_pjsip_cisco-en_US.xml` parses (xmllint).
+- `obj/doc/res_pjsip_cisco-en_US.xml` parses (xmllint).
   The Makefile harvests `/*** DOCUMENTATION ***/` blocks from
   `res/*.c` and `res/cisco_*/*.c` via awk/sed. A malformed block
   in one file breaks documentation for all ten modules and Asterisk
