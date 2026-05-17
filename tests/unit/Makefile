@@ -17,6 +17,9 @@
 SHELL := /bin/bash
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
+OBJ_DIR ?= obj
+MODULE_BUILD_DIR ?= $(OBJ_DIR)
+DOC_XML ?= $(OBJ_DIR)/doc/res_pjsip_cisco-en_US.xml
 
 CC      ?= cc
 # -O0: keep test bodies un-folded so assertions actually evaluate at
@@ -91,7 +94,10 @@ all: smoke unit
 # --------------------------------------------------------------------
 
 smoke:
-	@$(REPO_ROOT)/tests/unit/smoke.sh
+	@OBJ_DIR='$(OBJ_DIR)' \
+	    MODULE_BUILD_DIR='$(MODULE_BUILD_DIR)' \
+	    DOC_XML='$(DOC_XML)' \
+	    $(REPO_ROOT)/tests/unit/smoke.sh
 
 # --------------------------------------------------------------------
 # Unit tests: standalone C programs linked against pjproject. Each test

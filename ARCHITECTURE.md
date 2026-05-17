@@ -497,9 +497,11 @@ source pjproject headers from `pkg-config`, an explicit
 When `PJPROJECT_DIR` is set, Asterisk headers are derived from that
 same source tree so struct layouts match the running binary.
 
-`AST_MODULE_SELF_SYM` is hand-derived per-module via Make's `$<`. The
-linker script (`.exports` file) is the standard Asterisk one — every
-symbol is local except `_IO_stdin_used` — so we don't have a
+`AST_MODULE_SELF_SYM` is hand-derived per-module by the generated
+Make rules. `OBJ_DIR` defaults to `obj`, with module artifacts under
+`$(MODULE_BUILD_DIR)` and the generated XML under `$(DOC_XML)`.
+The linker script (`.exports` file) is the standard Asterisk one —
+every symbol is local except `_IO_stdin_used` — so we don't have a
 visibility fight on every Asterisk minor.
 
 ## XML documentation
@@ -508,8 +510,9 @@ Asterisk's strict sorcery validator demands a `<configObject>` match
 in some `*-en_US.xml` file under `/var/lib/asterisk/documentation/`
 before it'll accept field registrations. The Makefile extracts every
 `/*** DOCUMENTATION ... ***/` block from `res/*.c` and
-`res/cisco_*/*.c` into `obj/doc/res_pjsip_cisco-en_US.xml` at build
-time. `make install` copies that to `$(ASTERISK_DOC_DIR)`.
+`res/cisco_*/*.c` into `$(DOC_XML)` at build time
+(`obj/doc/res_pjsip_cisco-en_US.xml` by default). `make install`
+copies that to `$(ASTERISK_DOC_DIR)`.
 
 ## Wire format reference
 

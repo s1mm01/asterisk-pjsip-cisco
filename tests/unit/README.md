@@ -11,20 +11,23 @@ make -C tests/unit smoke   # build-artefact checks only
 make -C tests/unit unit    # pjlib-linked C tests only
 ```
 
+The smoke target follows the top-level artifact variables when invoked
+via `make tests`: `OBJ_DIR`, `MODULE_BUILD_DIR`, and `DOC_XML`.
+
 ## What's covered
 
 **smoke** (`smoke.sh`) — sanity checks the files Asterisk's loader will
 look at:
 
-- `obj/doc/res_pjsip_cisco-en_US.xml` parses (xmllint).
+- `$(DOC_XML)` parses (xmllint).
   The Makefile harvests `/*** DOCUMENTATION ***/` blocks from
   `res/*.c` and `res/cisco_*/*.c` via awk/sed. A malformed block
   in one file breaks documentation for all ten modules and Asterisk
   silently refuses to register sorcery types whose `<configObject>`
   doesn't parse.
 
-- Each `obj/*.so` has `__mod_info`, `load_module`, and
-  `unload_module` symbols at the locations Asterisk's loader
+- Each built `.so` under `$(MODULE_BUILD_DIR)` has `__mod_info`,
+  `load_module`, and `unload_module` symbols at the locations Asterisk's loader
   resolves via dlsym at registration time. Catches version-script
   regressions (e.g. `local: *;` accidentally hiding the entry
   points) and stripped/half-linked builds.

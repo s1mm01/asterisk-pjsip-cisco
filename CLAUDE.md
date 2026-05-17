@@ -9,9 +9,10 @@ Ten out-of-tree Asterisk shared modules (`res_pjsip_cisco_*`) that bolt Cisco En
 ## Build & development commands
 
 ```sh
-make                      # build all .so into obj/ + regen obj/doc/res_pjsip_cisco-en_US.xml
-make clean                # rm -rf obj/
-sudo make install         # obj/*.so -> ASTERISK_MODULES_DIR, obj/doc/*.xml -> ASTERISK_DOC_DIR, conf-samples -> ASTERISK_SAMPLE_DIR
+make                      # build all .so into $(OBJ_DIR) + regen $(DOC_XML)
+make doc                  # regenerate only the XML documentation
+make clean                # rm -rf $(OBJ_DIR)/
+sudo make install         # built .so -> ASTERISK_MODULES_DIR, $(DOC_XML) -> ASTERISK_DOC_DIR, conf-samples -> ASTERISK_SAMPLE_DIR
 sudo make uninstall
 sudo make check           # runtime: queries a running asterisk for "module show like cisco_"
 dpkg-buildpackage -us -uc -b -d   # Debian packaging (-d skips Build-Depends not on stock Ubuntu)
@@ -24,6 +25,7 @@ Header sourcing — pick **one** of these when invoking `make`:
 - Bare `make` — uses `pkg-config libpjproject` and asterisk-dev. Only safe when both are in lockstep with the running asterisk binary.
 
 The `check-headers` target is a sanity gate; it fails fast if neither path resolves.
+`OBJ_DIR` defaults to `obj`; `MODULE_BUILD_DIR` and `DOC_XML` derive from it unless explicitly overridden.
 
 There is **no unit-test framework**. CI (`.github/workflows/ci.yml`) builds against the highest stable tags of Asterisk 20.x (the LTS before 22), 22.x, and 23.x — downloads matching pjproject (version pinned from `asterisk-src/third-party/versions.mak`), stubs `buildopts.h`, and verifies all ten `.so` files plus XML validity. Behaviour is verified by hand against a real Cisco phone (on 22.9.x) — see `tests/README.md` for the parallel-TCP-on-:5160 recipe.
 
@@ -70,7 +72,7 @@ The grouping into topical headers (rather than one big shared `.h`) is for reada
 
 ### XML documentation
 
-Asterisk's strict sorcery validator demands a matching `<configObject>` in some XML file under `$ASTERISK_DOC_DIR` before it will accept field registrations. The Makefile harvests every `/*** DOCUMENTATION ... ***/` block from `res/*.c` and `res/cisco_*/*.c`, concatenates them into `obj/doc/res_pjsip_cisco-en_US.xml`, and `make install` deploys it. **When you add or rename a sorcery field, the matching `<configOption>` block in the source file is mandatory** — Asterisk will refuse to load the module otherwise.
+Asterisk's strict sorcery validator demands a matching `<configObject>` in some XML file under `$ASTERISK_DOC_DIR` before it will accept field registrations. The Makefile harvests every `/*** DOCUMENTATION ... ***/` block from `res/*.c` and `res/cisco_*/*.c`, concatenates them into `$(DOC_XML)` (`obj/doc/res_pjsip_cisco-en_US.xml` by default), and `make install` deploys it. **When you add or rename a sorcery field, the matching `<configOption>` block in the source file is mandatory** — Asterisk will refuse to load the module otherwise.
 
 ### Hook style for REGISTER-driven behaviour
 
