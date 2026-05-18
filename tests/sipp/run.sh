@@ -36,7 +36,19 @@ mkdir -p "$SIPP_TRACE_DIR"
 # -m 1            run a single call (one REGISTER / SUBSCRIBE cycle)
 # -trace_err      capture validation failures inline
 # -trace_screen   per-call summary (pass/fail counters)
-# -timeout 30s    hard upper bound; each scenario should finish in <1s
+# -timeout 30s    SIPp-internal call-duration cap
+# -bg             batch mode: after the -m calls complete, SIPp exits
+#                 instead of dropping into its interactive UI loop
+#                 ("Press [q] to exit"). Without this, sip-tester 3.7
+#                 hangs forever in non-interactive environments.
+# -nostdin        don't read stdin (defensive belt for runners that
+#                 do attach a TTY to bash subprocesses).
+# < /dev/null     same purpose as -nostdin via the shell side.
+#
+# Wrapped in `timeout 60s` as an outer safety net: if SIPp deadlocks
+# anyway (kernel buffer wedge, lost packet, broken DNS), the shell
+# kills it and run.sh fails fast instead of timing out the whole CI
+# job at the 6-hour mark.
 #
 # Digest credentials are embedded in each scenario's [authentication
 # username=... password=...] macro rather than passed via -au / -ap,
@@ -53,14 +65,17 @@ run_scenario() {
     echo "  sipp local: 0.0.0.0:$SIPP_LOCAL_PORT"
     echo
 
-    sipp \
+    timeout 60s sipp \
         -sf "$scenario" \
         -m 1 \
         -p "$SIPP_LOCAL_PORT" \
+        -bg \
+        -nostdin \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.err" \
         -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.screen" \
         -timeout 30s \
-        "$ASTERISK_HOST:$ASTERISK_PORT"
+        "$ASTERISK_HOST:$ASTERISK_PORT" \
+        < /dev/null
 }
 
 # Sorted iteration so register_optionsind runs first (subscribe_presence
