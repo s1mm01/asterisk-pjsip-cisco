@@ -12,8 +12,8 @@ on:
 
 jobs:
   build:
-    name: build against asterisk ${{ matrix.asterisk_branch }}
-    runs-on: ubuntu-24.04
+    name: build against asterisk ${{ matrix.asterisk_branch }} on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     env:
       OBJ_DIR: obj
       MODULE_BUILD_DIR: obj
@@ -21,13 +21,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each entry resolves (at job-start time) to the highest X.Y.Z
-        # stable tag matching the prefix: '20' -> highest 20.y.z (the
-        # current LTS before 22), '22' -> highest 22.y.z (the 22 LTS
-        # line we primarily target; the bench runs a 22.9.x build but
-        # CI tracks the whole 22 line), '23' -> highest 23.y.z.
-        # Stable-branch regressions surface within a week via the cron.
-        asterisk_branch: ['20', '22', '23']
+        # asterisk_branch resolves (at job-start time) to the highest
+        # X.Y.Z stable tag matching the prefix.
+        #
+        # runner is picked so that the cell's apt asterisk MAJOR
+        # version matches asterisk_branch — which then lets the
+        # downstream module-load smoke (gated on major match) actually
+        # exercise this cell's .so files against a real running
+        # asterisk binary. Current alignment (verified against
+        # launchpad.net/ubuntu/+source/asterisk):
+        #
+        #   ubuntu-22.04 (jammy) — asterisk 20.6.0 in universe
+        #   ubuntu-24.04 (noble) — asterisk 22.5.2 in universe
+        #   (asterisk 23 isn't yet packaged for any current Ubuntu
+        #    release; cell 23 stays runtime-skipped — build-time
+        #    ABI check still applies)
+        #
+        # When ubuntu releases a new LTS that bumps asterisk, swap
+        # the runner entry. Stable-branch regressions surface within
+        # a week via the cron.
+        include:
+          - asterisk_branch: '20'
+            runner: ubuntu-22.04
+          - asterisk_branch: '22'
+            runner: ubuntu-24.04
+          - asterisk_branch: '23'
+            runner: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -265,20 +284,23 @@ jobs:
       # actual asterisk to surface.
       #
       # The runner's apt asterisk is exactly ONE major version
-      # (whatever Canonical shipped with this ubuntu LTS — currently
-      # asterisk 20.x on ubuntu-24.04 noble). The matrix builds
-      # three versions, so most matrix cells WON'T have a major-
-      # matching apt asterisk to load into. Loading e.g. a 23-built
-      # .so into apt's 20.x binary is the exact ABI-mismatch trap
-      # we tell operators to avoid (CLAUDE.md) and would either
-      # SEGV at load or false-positive a passing test.
+      # (whatever Canonical shipped with that ubuntu release). The
+      # matrix maps each asterisk_branch to a runner that ships a
+      # major-matching apt asterisk (ubuntu-22.04 jammy for the 20
+      # cell, ubuntu-24.04 noble for the 22 cell). Asterisk 23 isn't
+      # in any current Ubuntu release; that cell stays runtime-
+      # skipped here, build-time ABI check still applies.
       #
-      # So the load test is gated: it only runs for the matrix cell
-      # whose asterisk_branch major matches what `apt-cache` reports
-      # for `asterisk`. The other cells log "skipped (no major-
-      # matching apt asterisk)" and move on. When noble eventually
-      # bumps to asterisk 22 (or whenever), the gate re-targets
-      # automatically without manual changes.
+      # Loading e.g. a 23-built .so into apt's 22.x binary is the
+      # exact ABI-mismatch trap we tell operators to avoid
+      # (CLAUDE.md) — SEGV at load or false-positive passing test.
+      # So the load test is gated: only the matrix cell whose
+      # asterisk_branch major matches what `apt-cache` reports for
+      # `asterisk` runs the load steps. Other cells log "skipped
+      # (no major-matching apt asterisk)" and move on. When Ubuntu
+      # eventually ships asterisk 23 (or the LTS bumps), update the
+      # runner mapping in the matrix.include above; the gate logic
+      # here doesn't need to change.
       #
       # Patch-version drift inside one major (source 20.13 vs apt
       # 20.6) is accepted as low-risk: asterisk's LTS lines hold ABI
