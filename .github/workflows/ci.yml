@@ -356,8 +356,16 @@ jobs:
         # We install them on top of apt's asterisk of the SAME
         # major version — minor/patch may differ but LTS ABI is
         # stable across minors.
+        #
+        # PJPROJECT_DIR is passed again here because the Makefile's
+        # check-headers target (a phony prereq of every target,
+        # install included) re-validates header resolution. We never
+        # installed asterisk-dev / libpjproject-dev on the runner —
+        # the build step pinned headers to the downloaded asterisk
+        # source tree instead, and install needs the same pin or
+        # check-headers fails before any .so is copied.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
-        run: sudo make install
+        run: sudo make install PJPROJECT_DIR=${{ github.workspace }}/asterisk-src
 
       - name: restart asterisk and wait for boot
         # `core waitfullybooted` is the hard barrier — without it
