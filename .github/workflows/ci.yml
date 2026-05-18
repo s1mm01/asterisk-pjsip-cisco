@@ -391,6 +391,17 @@ jobs:
         # contain "Running"; failures show "Not Running" or similar.
         # We count and require 10. On failure we dump diagnostics
         # for the run log.
+        #
+        # Diagnostic dump on failure covers three layers:
+        #   1) Are the .so files actually on disk and readable?
+        #   2) What does asterisk think loaded? (`module show`)
+        #   3) What did asterisk's own loader log? — this lives in
+        #      /var/log/asterisk/full per Ubuntu's stock logger.conf,
+        #      NOT in journalctl. systemd only captures stdout/stderr
+        #      of the daemon process, which Asterisk doesn't use for
+        #      its own log output. Without /var/log/asterisk/full the
+        #      dlopen-time loader errors (undefined symbol, ABI
+        #      mismatch, missing dependency) are invisible.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           set +e
@@ -399,9 +410,17 @@ jobs:
           running=$(echo "$output" | grep -c 'Running')
           if [ "$running" -ne 10 ]; then
             echo "::error::Expected 10 cisco_* modules Running, got $running"
+            echo "--- ls /usr/lib/asterisk/modules/res_pjsip_cisco_*.so ---"
+            sudo ls -la /usr/lib/asterisk/modules/res_pjsip_cisco_*.so 2>&1 || true
             echo "--- module show (full) ---"
             sudo asterisk -rx 'module show'
-            echo "--- recent asterisk log ---"
+            echo "--- /var/log/asterisk/full (last 200 lines) ---"
+            sudo tail -n 200 /var/log/asterisk/full 2>&1 || \
+              echo "(no /var/log/asterisk/full — falling back to messages)"
+            echo "--- /var/log/asterisk/messages (last 100 lines) ---"
+            sudo tail -n 100 /var/log/asterisk/messages 2>&1 || \
+              echo "(no /var/log/asterisk/messages either)"
+            echo "--- journalctl asterisk.service ---"
             sudo journalctl -u asterisk --since '5 minutes ago' | tail -100
             exit 1
           fi
