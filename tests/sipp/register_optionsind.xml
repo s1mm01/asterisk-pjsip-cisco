@@ -101,19 +101,18 @@
        ============================================================ -->
   <recv response="200">
     <action>
-      <ereg regexp="x-cisco-remotecc-response"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="&lt;optionsind&gt;"
-            search_in="msg"
-            check_it="true"/>
+      <ereg regexp="x-cisco-remotecc-response" search_in="msg" check_it="true" assign_to="optionsind_outer"/>
+      <ereg regexp="&lt;optionsind&gt;"        search_in="msg" check_it="true" assign_to="optionsind_inner"/>
     </action>
   </recv>
 
   <!-- ============================================================
        Step 5: de-register so the contact doesn't linger in the
        AOR past the test (matters if subsequent tests query
-       'pjsip show endpoint 1010').
+       'pjsip show endpoint 1010'). X-Test-Asserts echoes the
+       eregs' captured values so sip-tester 3.7 sees each variable
+       referenced downstream (see bulkupdate_refer.xml for the
+       rationale).
        ============================================================ -->
   <send retrans="500">
     <![CDATA[
@@ -127,6 +126,7 @@
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
       Contact: <sip:1010@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddeeff>";reg-id=1
+      X-Test-Asserts: [$optionsind_outer] [$optionsind_inner]
       [authentication]
       Expires: 0
       Content-Length: 0

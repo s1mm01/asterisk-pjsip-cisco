@@ -101,18 +101,15 @@
        ============================================================ -->
   <recv request="NOTIFY" crlf="true">
     <action>
-      <ereg regexp="Event: *presence"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;"
-            search_in="msg"
-            check_it="true"/>
+      <ereg regexp="Event: *presence"                 search_in="msg" check_it="true" assign_to="evt_hdr_1"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid" search_in="msg" check_it="true" assign_to="cisco_ns_1"/>
+      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;" search_in="msg" check_it="true" assign_to="target_1"/>
     </action>
   </recv>
 
+  <!-- X-Test-Asserts echoes the eregs' captures so sip-tester 3.7
+       sees each variable referenced downstream — see
+       bulkupdate_refer.xml for the rationale. -->
   <send>
     <![CDATA[
 
@@ -122,6 +119,7 @@
       [last_To:]
       [last_Call-ID:]
       [last_CSeq:]
+      X-Test-Asserts: [$evt_hdr_1] [$cisco_ns_1] [$target_1]
       Content-Length: 0
 
     ]]>
@@ -133,15 +131,9 @@
        ============================================================ -->
   <recv request="NOTIFY" crlf="true">
     <action>
-      <ereg regexp="Event: *presence"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;"
-            search_in="msg"
-            check_it="true"/>
+      <ereg regexp="Event: *presence"                 search_in="msg" check_it="true" assign_to="evt_hdr_2"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid" search_in="msg" check_it="true" assign_to="cisco_ns_2"/>
+      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;" search_in="msg" check_it="true" assign_to="target_2"/>
     </action>
   </recv>
 
@@ -154,6 +146,7 @@
       [last_To:]
       [last_Call-ID:]
       [last_CSeq:]
+      X-Test-Asserts: [$evt_hdr_2] [$cisco_ns_2] [$target_2]
       Content-Length: 0
 
     ]]>

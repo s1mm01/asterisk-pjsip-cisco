@@ -96,27 +96,22 @@
        ============================================================ -->
   <recv request="REFER" crlf="true">
     <action>
-      <ereg regexp="Refer-To"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="x-cisco-remotecc-request"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="&lt;bulkupdate"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="line=&quot;1&quot;"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="line=&quot;2&quot;"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="line=&quot;3&quot;"
-            search_in="msg"
-            check_it="true"/>
+      <ereg regexp="Refer-To"            search_in="msg" check_it="true" assign_to="refer_to_hdr"/>
+      <ereg regexp="x-cisco-remotecc-request" search_in="msg" check_it="true" assign_to="cisco_refer"/>
+      <ereg regexp="&lt;bulkupdate"      search_in="msg" check_it="true" assign_to="bulkupdate_tag"/>
+      <ereg regexp="line=&quot;1&quot;"  search_in="msg" check_it="true" assign_to="line_1"/>
+      <ereg regexp="line=&quot;2&quot;"  search_in="msg" check_it="true" assign_to="line_2"/>
+      <ereg regexp="line=&quot;3&quot;"  search_in="msg" check_it="true" assign_to="line_3"/>
     </action>
   </recv>
 
+  <!-- The X-Test-Asserts header is a noise-only echo of every
+       captured value. SIPp 3.7 errors out when a variable declared
+       via assign_to= is never referenced downstream, so each one
+       has to appear via [$varname] somewhere later in the scenario.
+       asterisk ignores unknown SIP headers, so dropping them on
+       the 200 OK we send back to the REFER is harmless. Same
+       pattern applies in the other scenario files. -->
   <send>
     <![CDATA[
 
@@ -126,6 +121,7 @@
       [last_To:]
       [last_Call-ID:]
       [last_CSeq:]
+      X-Test-Asserts: [$refer_to_hdr] [$cisco_refer] [$bulkupdate_tag] [$line_1] [$line_2] [$line_3]
       Content-Length: 0
 
     ]]>

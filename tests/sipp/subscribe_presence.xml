@@ -102,19 +102,16 @@
        ============================================================ -->
   <recv request="NOTIFY" crlf="true">
     <action>
-      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"
-            search_in="msg"
-            check_it="true"/>
-      <ereg regexp="&lt;presence"
-            search_in="msg"
-            check_it="true"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid" search_in="msg" check_it="true" assign_to="cisco_ns"/>
+      <ereg regexp="&lt;presence"                     search_in="msg" check_it="true" assign_to="presence_root"/>
     </action>
   </recv>
 
   <!-- ============================================================
        Step 6: SIPp ACKs the NOTIFY with 200 OK. Without this
        asterisk would retransmit the NOTIFY (RFC 6665) and the
-       scenario would time out.
+       scenario would time out. X-Test-Asserts echoes the eregs'
+       captures (see bulkupdate_refer.xml for the rationale).
        ============================================================ -->
   <send>
     <![CDATA[
@@ -125,6 +122,7 @@
       [last_To:]
       [last_Call-ID:]
       [last_CSeq:]
+      X-Test-Asserts: [$cisco_ns] [$presence_root]
       Content-Length: 0
 
     ]]>
