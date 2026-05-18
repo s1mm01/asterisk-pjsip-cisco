@@ -362,7 +362,8 @@ jobs:
         run: |
           sudo apt-get install -y \
             asterisk asterisk-modules \
-            asterisk-dev
+            asterisk-dev \
+            sip-tester
 
       - name: rebuild + install modules against apt asterisk-dev
         # The earlier `make` step compiled against the resolved
@@ -404,7 +405,7 @@ jobs:
           make
           sudo --preserve-env=PJPROJECT_INCLUDE make install
 
-      - name: install test pjsip.conf
+      - name: install test pjsip.conf + extensions.conf
         # Drop in a known-good pjsip.conf with a spread of [type=cisco]
         # sections so sorcery type registration + field validation runs
         # against real config. Apt's asterisk-config ships a default
@@ -412,8 +413,15 @@ jobs:
         # is safe in the throwaway runner. Five endpoints (1010 / 1030 /
         # 1031 / 1032 / 1050) exercise every documented type=cisco field
         # at least once with a non-default value.
+        #
+        # extensions.conf provides hints for the five endpoints in the
+        # ci-test context that pjsip.conf routes them through. Needed by
+        # the SIPp SUBSCRIBE presence scenario — asterisk can't push a
+        # NOTIFY for an extension without a hint defined.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
-        run: sudo cp tests/ci/pjsip.conf /etc/asterisk/pjsip.conf
+        run: |
+          sudo cp tests/ci/pjsip.conf      /etc/asterisk/pjsip.conf
+          sudo cp tests/ci/extensions.conf /etc/asterisk/extensions.conf
 
       - name: restart asterisk and wait for boot
         # `core waitfullybooted` is the hard barrier — without it
@@ -524,6 +532,29 @@ jobs:
             fi
           done
           echo "All 5 type=cisco sections loaded; no sorcery errors logged."
+
+      - name: run SIPp Cisco wire-format scenarios
+        # Drives a SIPp-simulated Cisco phone through full REGISTER /
+        # auth / 200-OK / de-register flow against the running
+        # asterisk. Asserts the 200 OK response carries the
+        # optionsind multipart body, and that the PATH C MAC harvest
+        # + Reason-header parsing populated the cisco_mac map.
+        # See tests/sipp/README.md.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        run: bash tests/sipp/run.sh
+
+      - name: upload SIPp traces on failure
+        # Capture SIPp's per-call summary + error log when the
+        # scenario step fails. Without these, debugging a wire-
+        # format regression means re-running CI with manual print
+        # statements — slow and noisy.
+        if: failure() && steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        uses: actions/upload-artifact@v4
+        with:
+          name: sipp-traces-asterisk${{ matrix.asterisk_branch }}
+          path: /tmp/sipp-traces/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: check asterisk log for cisco-related errors/warnings
         # Sorcery type registration failures, helper symbol misses,

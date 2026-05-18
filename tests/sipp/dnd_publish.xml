@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  PATH B — DND state via inbound PUBLISH.
+
+  Cisco phones publish DND state via an Event: presence PUBLISH
+  carrying a PIDF body with <ce:dnd/> in the activities list.
+  res_pjsip_cisco_feature_events accepts the PUBLISH, parses the
+  body, and writes DND/<endpoint> to astdb. This scenario exercises
+  the inbound path end-to-end:
+
+    1. PUBLISH Event: presence with PIDF body marking endpoint
+       1050 as DND.
+    2. asterisk 401 with WWW-Authenticate.
+    3. PUBLISH with Authorization.
+    4. asterisk 200 OK.
+    5. Side-effect assertion in run.sh: `pjsip cisco status 1050`
+       reports DND/1050 = on.
+
+  Uses 1050 (not 1010) to avoid contaminating other scenarios that
+  REGISTER as 1010 — keeping DND state changes scoped to one
+  endpoint per scenario simplifies cross-scenario reasoning.
+
+  No REGISTER required: PUBLISH is non-dialog. The endpoint auth
+  still applies (asterisk challenges) but the publisher doesn't
+  need a registered contact.
+-->
+<scenario name="cisco_dnd_publish">
+
+  <!-- ============================================================
+       Step 1: initial PUBLISH (no Authorization). The body carries
+       the Cisco-flavoured PIDF with <ce:dnd/>; the wire body is
+       hand-crafted here (rather than read from a file) so a test
+       reviewer can see the exact shape inline.
+       ============================================================ -->
+  <send retrans="500">
+    <![CDATA[
+
+      PUBLISH sip:1050@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1050@[remote_ip]>;tag=[call_number]
+      To: <sip:1050@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 PUBLISH
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Event: presence
+      Expires: 3600
+      Content-Type: application/pidf+xml
+      Content-Length: [len]
+
+      <?xml version="1.0" encoding="UTF-8"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf"
+                xmlns:dm="urn:ietf:params:xml:ns:pidf:data-model"
+                xmlns:e="urn:ietf:params:xml:ns:pidf:status:rpid"
+                xmlns:ce="urn:cisco:params:xml:ns:pidf:rpid"
+                entity="sip:1050@[remote_ip]">
+        <dm:person>
+          <e:activities>
+            <ce:dnd/>
+          </e:activities>
+        </dm:person>
+        <tuple id="1050">
+          <status>
+            <basic>open</basic>
+          </status>
+        </tuple>
+      </presence>
+    ]]>
+  </send>
+
+  <!-- ============================================================
+       Step 2: 401 Unauthorized — capture challenge.
+       ============================================================ -->
+  <recv response="401" auth="true">
+  </recv>
+
+  <!-- ============================================================
+       Step 3: PUBLISH with Authorization. Re-send the full body
+       (SIPp [authentication] only adds the Authorization header;
+       body has to be present again).
+       ============================================================ -->
+  <send retrans="500">
+    <![CDATA[
+
+      PUBLISH sip:1050@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1050@[remote_ip]>;tag=[call_number]
+      To: <sip:1050@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 2 PUBLISH
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Event: presence
+      Expires: 3600
+      [authentication]
+      Content-Type: application/pidf+xml
+      Content-Length: [len]
+
+      <?xml version="1.0" encoding="UTF-8"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf"
+                xmlns:dm="urn:ietf:params:xml:ns:pidf:data-model"
+                xmlns:e="urn:ietf:params:xml:ns:pidf:status:rpid"
+                xmlns:ce="urn:cisco:params:xml:ns:pidf:rpid"
+                entity="sip:1050@[remote_ip]">
+        <dm:person>
+          <e:activities>
+            <ce:dnd/>
+          </e:activities>
+        </dm:person>
+        <tuple id="1050">
+          <status>
+            <basic>open</basic>
+          </status>
+        </tuple>
+      </presence>
+    ]]>
+  </send>
+
+  <!-- ============================================================
+       Step 4: 200 OK. The astdb write happens server-side; verified
+       post-flow by run.sh via `pjsip cisco status 1050`.
+       ============================================================ -->
+  <recv response="200">
+  </recv>
+
+  <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
+  <CallLengthRepartition value="10, 50, 100, 500, 1000"/>
+
+</scenario>

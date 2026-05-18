@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Post-REGISTER bulkupdate REFER round-trip.
+
+  Fourth of the four signals Cisco firmware needs to classify line
+  buttons as BLF Speed Dial (see register_optionsind.xml,
+  unsolicited_blf.xml for two of the others; the SEP file is
+  provisioning-side and out of scope). When a Cisco endpoint
+  registers, asterisk pushes a REFER carrying a multipart
+  bulkupdate body — one <contact line="N"> per line on the
+  physical phone, with the current DND / HuntGroup / CFwdAll
+  state for each line from astdb.
+
+  Uses 1031 — the second line button of the multi-line phone
+  (1030 / 1031 / 1032) in tests/ci/pjsip.conf. We pick 1031
+  instead of 1010 specifically because:
+
+    * 1031 has aliases = 1030,1032 — the bulkupdate body should
+      carry contact entries for all three lines, exercising the
+      multi-line consolidation code path that single-line
+      endpoints don't touch.
+    * 1031 has no subscribe= list, so no unsolicited NOTIFYs
+      arrive to complicate the SIPp recv ordering.
+
+  Flow:
+    1. REGISTER (no Authorization).
+    2. asterisk 401 with WWW-Authenticate.
+    3. REGISTER with Authorization.
+    4. asterisk 200 OK.
+    5. asterisk sends inbound REFER carrying the multipart
+       bulkupdate body. Assert:
+         - Refer-To present (header structural sanity)
+         - x-cisco-remotecc-request wrapper in body
+         - <bulkupdate> root element
+         - line="1", line="2", line="3" all present (the three
+           lines of the multi-line phone consolidated into one
+           REFER, ordered by line_index from each type=cisco)
+    6. SIPp 200 OK to the REFER.
+
+  Endpoint stays registered at scenario end so subsequent
+  status queries find the bulkupdate state in cisco_mac map.
+-->
+<scenario name="cisco_bulkupdate_refer">
+
+  <!-- ============================================================
+       Step 1-3: REGISTER + 401 + auth (same shape as
+       register_optionsind, but as endpoint 1031).
+       ============================================================ -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1031@[remote_ip]>;tag=[call_number]
+      To: <sip:1031@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Contact: <sip:1031@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="401" auth="true">
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1031@[remote_ip]>;tag=[call_number]
+      To: <sip:1031@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Contact: <sip:1031@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
+      [authentication]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200">
+  </recv>
+
+  <!-- ============================================================
+       Step 5: inbound REFER. Assert multi-line bulkupdate shape.
+       ============================================================ -->
+  <recv request="REFER" crlf="true">
+    <action>
+      <ereg regexp="Refer-To"
+            search_in="msg"
+            check_it="true"
+            assign_to="refer_to_hdr"/>
+      <ereg regexp="x-cisco-remotecc-request"
+            search_in="msg"
+            check_it="true"
+            assign_to="cisco_refer_wrapper"/>
+      <ereg regexp="&lt;bulkupdate"
+            search_in="msg"
+            check_it="true"
+            assign_to="bulkupdate_root"/>
+      <ereg regexp="line=&quot;1&quot;"
+            search_in="msg"
+            check_it="true"
+            assign_to="line_1"/>
+      <ereg regexp="line=&quot;2&quot;"
+            search_in="msg"
+            check_it="true"
+            assign_to="line_2"/>
+      <ereg regexp="line=&quot;3&quot;"
+            search_in="msg"
+            check_it="true"
+            assign_to="line_3"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
+  <CallLengthRepartition value="10, 50, 100, 500, 1000"/>
+
+</scenario>
