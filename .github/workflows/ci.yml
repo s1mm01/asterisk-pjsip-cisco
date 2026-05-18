@@ -420,12 +420,12 @@ jobs:
             sudo ls -la /var/log/asterisk/ 2>&1 || true
             echo "--- module show (full) ---"
             sudo asterisk -rx 'module show'
-            echo "--- /var/log/asterisk/full (last 200 lines) ---"
-            sudo tail -n 200 /var/log/asterisk/full 2>&1 || \
-              echo "(no /var/log/asterisk/full)"
-            echo "--- /var/log/asterisk/messages (last 100 lines) ---"
-            sudo tail -n 100 /var/log/asterisk/messages 2>&1 || \
-              echo "(no /var/log/asterisk/messages)"
+            echo "--- /var/log/asterisk/*.log (Ubuntu names the file messages.log) ---"
+            for f in /var/log/asterisk/*.log; do
+              [ -f "$f" ] || continue
+              echo "===== $f ====="
+              sudo tail -n 200 "$f"
+            done
             echo "--- journalctl asterisk.service ---"
             sudo journalctl -u asterisk --since '5 minutes ago' | tail -100
             echo "--- journalctl --identifier asterisk (syslog-tagged) ---"
