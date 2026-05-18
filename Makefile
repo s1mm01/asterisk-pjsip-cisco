@@ -41,19 +41,34 @@
 # --------------------------------------------------------------------
 
 ASTERISK_CONF        ?= /etc/asterisk/asterisk.conf
+
+# Helper: extract one [directories] entry from asterisk.conf.
+# Tolerates both `key => value` (upstream / Debian style) and a plain
+# `key = value` for hand-edited configs.
+ast_conf_dir = $(shell sed -nE \
+    's|^[[:space:]]*$(1)[[:space:]]*=>?[[:space:]]*([^[:space:];]+).*|\1|p' \
+    $(ASTERISK_CONF) | head -1)
+
 ifeq ($(strip $(ASTERISK_MODULES_DIR)),)
 ifneq ($(wildcard $(ASTERISK_CONF)),)
-# astmoddir line looks like:  astmoddir => /usr/lib/.../asterisk/modules
-# (asterisk.conf uses `=>` as the assignment operator in [directories];
-# the regex also tolerates a plain `=` for hand-edited configs).
-ASTERISK_MODULES_DIR := $(shell sed -nE \
-    's|^[[:space:]]*astmoddir[[:space:]]*=>?[[:space:]]*([^[:space:];]+).*|\1|p' \
-    $(ASTERISK_CONF) | head -1)
+ASTERISK_MODULES_DIR := $(call ast_conf_dir,astmoddir)
 endif
 endif
 ASTERISK_MODULES_DIR ?= /usr/lib/asterisk/modules
 
+# Doc XML lives under astdatadir/documentation per asterisk's xmldoc
+# loader. Upstream default for astdatadir is /var/lib/asterisk;
+# Debian's asterisk-config moves it to /usr/share/asterisk (FHS).
+ifeq ($(strip $(ASTERISK_DOC_DIR)),)
+ifneq ($(wildcard $(ASTERISK_CONF)),)
+ASTERISK_DATA_DIR    := $(call ast_conf_dir,astdatadir)
+ifneq ($(strip $(ASTERISK_DATA_DIR)),)
+ASTERISK_DOC_DIR     := $(ASTERISK_DATA_DIR)/documentation
+endif
+endif
+endif
 ASTERISK_DOC_DIR     ?= /var/lib/asterisk/documentation
+
 ASTERISK_SAMPLE_DIR  ?= /usr/share/doc/asterisk-pjsip-cisco
 
 # Asterisk headers. We MUST build against the same headers the running
