@@ -255,85 +255,86 @@ jobs:
           sudo apt-get install -y devscripts debhelper
           dpkg-buildpackage -us -uc -b -d
 
-  # ----------------------------------------------------------------
-  # Asterisk module-load smoke test.
-  #
-  # The 'build' matrix above proves our .so files compile and have the
-  # required loader symbols. It doesn't actually load them. A struct-
-  # offset ABI mismatch, a sorcery type registration that silently fails,
-  # a body-generator priority race, or a missing dlsym dependency would
-  # all pass that matrix and only fail when an operator restarts
-  # asterisk on a real host.
-  #
-  # This job closes that gap: install asterisk + asterisk-dev + libpjproject-dev
-  # from apt (one version, matching what the runner's apt offers), build our
-  # modules against the *system* asterisk-dev headers (so the ABI matches
-  # the live binary exactly), `make install` into /usr/lib/asterisk/modules,
-  # restart asterisk, and verify every cisco_* module reports Running.
-  #
-  # Deliberately separate from the build matrix because:
-  #   - The matrix builds against three downloaded-from-source asterisk
-  #     versions for ABI-compatibility coverage. Loading any of those
-  #     into the runner's apt asterisk would deliberately mix
-  #     mismatched headers + binary, which is the trap we tell
-  #     operators to avoid (see CLAUDE.md).
-  #   - The matrix is multi-version; the load test only needs one,
-  #     and ubuntu-24.04's apt asterisk is whatever single version
-  #     Canonical shipped that release.
-  #
-  # If this job ever fails: rerun with `ACTIONS_STEP_DEBUG=true` and
-  # inspect the module-show + journalctl steps. The 99% likely cause
-  # is a code path that does work at -Werror compile time but fails
-  # at module load (sorcery type field misuse, missing dependency,
-  # version-script accidentally hiding __mod_info).
-  # ----------------------------------------------------------------
+      # ----------------------------------------------------------
+      # Module-load smoke against a real asterisk.
+      #
+      # Compile-time ABI breakage is caught by the build steps above.
+      # Runtime load failure (sorcery type registration silently
+      # failing, body-generator slot race losing to xpidf, missing
+      # dlsym dependency, struct-offset SEGV during load) needs an
+      # actual asterisk to surface.
+      #
+      # The runner's apt asterisk is exactly ONE major version
+      # (whatever Canonical shipped with this ubuntu LTS — currently
+      # asterisk 20.x on ubuntu-24.04 noble). The matrix builds
+      # three versions, so most matrix cells WON'T have a major-
+      # matching apt asterisk to load into. Loading e.g. a 23-built
+      # .so into apt's 20.x binary is the exact ABI-mismatch trap
+      # we tell operators to avoid (CLAUDE.md) and would either
+      # SEGV at load or false-positive a passing test.
+      #
+      # So the load test is gated: it only runs for the matrix cell
+      # whose asterisk_branch major matches what `apt-cache` reports
+      # for `asterisk`. The other cells log "skipped (no major-
+      # matching apt asterisk)" and move on. When noble eventually
+      # bumps to asterisk 22 (or whenever), the gate re-targets
+      # automatically without manual changes.
+      #
+      # Patch-version drift inside one major (source 20.13 vs apt
+      # 20.6) is accepted as low-risk: asterisk's LTS lines hold ABI
+      # stable across minor/patch releases. Full coverage for all
+      # matrix cells would require source-building asterisk per
+      # cell (~5-10 min each) — out of scope here; see commit
+      # history for the deliberation.
+      # ----------------------------------------------------------
 
-  asterisk-load:
-    name: load modules into a running asterisk
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: install asterisk + build deps from apt
-        # Pulls asterisk (the runtime), asterisk-dev (headers used by
-        # our Makefile's default /usr/include path), asterisk-modules
-        # (the rest of the stock module set our cisco_* modules depend
-        # on at load time: res_pjsip, res_pjsip_pubsub, res_pjsip_session,
-        # res_pjsip_xpidf_body_generator [for the slot-grab race],
-        # res_parking [optional for remotecc but loaded by default],
-        # res_pjsip_exten_state, etc), and libpjproject-dev (PJSIP
-        # headers our Makefile finds via pkg-config). The exact
-        # asterisk version is whatever ubuntu-24.04 ships.
+      - name: detect apt asterisk major version
+        id: apt_asterisk
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            asterisk \
-            asterisk-dev \
-            asterisk-modules \
-            libpjproject-dev \
-            build-essential \
-            pkg-config \
-            libxml2-dev
+          # apt-cache madison emits e.g. "asterisk | 1:20.6.0~dfsg+~cs6.13.40431414-1 | ..."
+          # — the third field is the Debian version; strip the epoch
+          # (everything before ':'), then take the major component.
+          APT_VER=$(apt-cache madison asterisk 2>/dev/null \
+                      | head -1 \
+                      | awk -F'|' '{print $2}' \
+                      | sed 's/^[[:space:]]*//;s/^[0-9]*://' \
+                      | cut -d. -f1)
+          if [ -z "$APT_VER" ]; then
+            APT_VER="(none)"
+          fi
+          echo "apt asterisk major version: $APT_VER"
+          echo "matrix asterisk branch:     ${{ matrix.asterisk_branch }}"
+          echo "major=$APT_VER" >> "$GITHUB_OUTPUT"
 
-      - name: build against system asterisk-dev
-        # No PJPROJECT_DIR / PJPROJECT_INCLUDE: the Makefile defaults to
-        # pkg-config libpjproject and /usr/include asterisk headers,
-        # which is what apt just installed. ABI now matches the
-        # /usr/sbin/asterisk binary exactly.
-        run: make
+      - name: install asterisk runtime from apt
+        # Only when this matrix cell's major == apt's major.
+        # Pulls asterisk (the runtime), asterisk-modules (stock
+        # res_pjsip + dependencies our modules need at load time:
+        # res_pjsip_pubsub, res_pjsip_session, res_pjsip_xpidf_
+        # body_generator for the slot-grab race, res_parking for the
+        # remotecc Park path, res_pjsip_exten_state, etc).
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        run: |
+          sudo apt-get install -y asterisk asterisk-modules
 
-      - name: install modules
+      - name: install our modules into the apt asterisk
+        # The .so files were built by `make` above against the
+        # downloaded asterisk source tree (matrix-specific major).
+        # We install them on top of apt's asterisk of the SAME
+        # major version — minor/patch may differ but LTS ABI is
+        # stable across minors.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: sudo make install
 
       - name: restart asterisk and wait for boot
-        # `core waitfullybooted` blocks until module loading is done,
-        # so we don't race the verify step against a still-starting
-        # asterisk.  systemctl --no-block lets restart return promptly;
-        # the wait command is the actual barrier.
+        # `core waitfullybooted` is the hard barrier — without it
+        # the verify step would race a still-loading asterisk.
+        # We poll for the control socket first because systemctl
+        # returns before asterisk is up enough to accept rasterisk
+        # connections.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           sudo systemctl restart asterisk
-          # Poll for the asterisk control socket to appear (the
-          # rasterisk client we use below needs it). 30s ceiling.
           for i in $(seq 1 30); do
             if sudo asterisk -rx 'core show version' >/dev/null 2>&1; then
               break
@@ -344,19 +345,19 @@ jobs:
           sudo asterisk -rx 'core show version'
 
       - name: verify all 10 cisco_* modules report Running
-        # `module show like cisco_` includes a header line ("Module
-        # Description ...") and a trailer ("N modules loaded") on top
-        # of the actual module lines. We grep for "Running" and count.
-        # On success we print the table for the run log; on failure
-        # we additionally dump full module-show output and any
-        # asterisk warnings/errors for diagnosis.
+        # `module show like cisco_` prints a header line + body lines
+        # + a "N modules loaded" trailer. Body lines that loaded ok
+        # contain "Running"; failures show "Not Running" or similar.
+        # We count and require 10. On failure we dump diagnostics
+        # for the run log.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           set +e
           output=$(sudo asterisk -rx 'module show like cisco_')
           echo "$output"
           running=$(echo "$output" | grep -c 'Running')
           if [ "$running" -ne 10 ]; then
-            echo "::error::Expected 10 cisco_* modules in Running state, got $running"
+            echo "::error::Expected 10 cisco_* modules Running, got $running"
             echo "--- module show (full) ---"
             sudo asterisk -rx 'module show'
             echo "--- recent asterisk log ---"
@@ -366,18 +367,15 @@ jobs:
           echo "All 10 cisco_* modules Running."
 
       - name: check asterisk log for cisco-related errors/warnings
-        # Module-load problems often surface as WARNINGs / ERRORs in
-        # the asterisk log before / after a module flips to "Running":
-        # sorcery type registration failures, helper symbol resolution
-        # misses, body-generator slot conflicts. Fail if we see any
-        # cisco-tagged WARNING or ERROR after startup.
-        #
-        # Known-benign WARNING: stock res_pjsip_xpidf_body_generator
-        # logs "A body generator for application/cpim-pidf+xml is
-        # already registered" when our pidf_body_generator beats it
-        # to the slot. That's the intended outcome (see
-        # res_pjsip_cisco_pidf_body_generator.c's load_pri comment)
-        # — filter it out before counting.
+        # Sorcery type registration failures, helper symbol misses,
+        # body-generator slot conflicts often log a WARNING / ERROR
+        # before "module show" flips a module to Running. Catch them
+        # here. Known-benign exception filtered out: stock
+        # res_pjsip_xpidf_body_generator logs "A body generator for
+        # application/cpim-pidf+xml is already registered" when our
+        # cisco_pidf_body_generator wins the slot — intended (see
+        # res/res_pjsip_cisco_pidf_body_generator.c's load_pri).
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           set +e
           log=$(sudo journalctl -u asterisk --since '5 minutes ago' \
@@ -393,9 +391,17 @@ jobs:
           fi
           echo "No cisco-related ERROR/WARNING in asterisk log."
 
+      - name: load test skipped (no major-matching apt asterisk)
+        # Visible log line so a reviewer doesn't wonder why two of
+        # three matrix cells silently skip the load steps.
+        if: steps.apt_asterisk.outputs.major != matrix.asterisk_branch
+        run: |
+          echo "Module-load smoke skipped for asterisk-${{ matrix.asterisk_branch }}:"
+          echo "  ubuntu-24.04 apt provides asterisk-${{ steps.apt_asterisk.outputs.major }} only."
+          echo "  Build-time ABI compat for this matrix cell is still verified by the build above."
+
       - name: stop asterisk
-        # Idempotent cleanup. The CI runner is torn down after the
-        # job anyway, but explicit stop logs any shutdown-time
-        # warnings (which would be a separate diagnostic signal).
-        if: always()
+        # Belt-and-braces cleanup — the runner is torn down anyway,
+        # but explicit stop surfaces any shutdown-time warnings.
+        if: always() && steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: sudo systemctl stop asterisk || true
