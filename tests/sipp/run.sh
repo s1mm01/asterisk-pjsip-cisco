@@ -34,11 +34,14 @@ mkdir -p "$SIPP_TRACE_DIR"
 # so CI can upload them as a failure artifact without overlap.
 #
 # -m 1            run a single call (one REGISTER / SUBSCRIBE cycle)
-# -au / -ap       digest credentials; all scenarios subscribe AS
-#                 endpoint 1010, so one cred pair fits everything
 # -trace_err      capture validation failures inline
 # -trace_screen   per-call summary (pass/fail counters)
 # -timeout 30s    hard upper bound; each scenario should finish in <1s
+#
+# Digest credentials are embedded in each scenario's [authentication
+# username=... password=...] macro rather than passed via -au / -ap,
+# because the scenarios drive different endpoints (1010 / 1031 /
+# 1050) with per-endpoint auth sections in tests/ci/pjsip.conf.
 run_scenario() {
     local scenario="$1"
     local name
@@ -54,8 +57,6 @@ run_scenario() {
         -sf "$scenario" \
         -m 1 \
         -p "$SIPP_LOCAL_PORT" \
-        -au 1010 \
-        -ap ci-no-secret \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.err" \
         -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.screen" \
         -timeout 30s \

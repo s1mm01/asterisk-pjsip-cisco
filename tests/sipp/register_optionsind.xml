@@ -16,7 +16,7 @@
        InactiveLoadId — the v0.5.0 PATH C harvest path.
     2. asterisk responds 401 Unauthorized with WWW-Authenticate.
     3. REGISTER with Authorization (SIPp computes the digest from
-       the captured WWW-Authenticate via [authentication]).
+       the captured WWW-Authenticate via [authentication username=1010 password=ci-no-secret]).
     4. asterisk responds 200 OK; assert the response body matches
        the optionsind multipart shape we emit.
     5. De-register (Expires: 0).
@@ -68,8 +68,11 @@
   <!-- ============================================================
        Step 3: REGISTER with Authorization. SIPp's [authentication]
        macro computes the digest response from the captured
-       WWW-Authenticate header in step 2, using the credentials
-       declared on the command line (-au / -ap).
+       WWW-Authenticate header in step 2, using the username +
+       password specified inline below. Each scenario embeds its
+       own credentials (rather than -au / -ap on the command line)
+       because the scenarios use different endpoints in
+       tests/ci/pjsip.conf.
        ============================================================ -->
   <send retrans="500">
     <![CDATA[
@@ -84,7 +87,7 @@
       Max-Forwards: 70
       Contact: <sip:1010@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddeeff>";reg-id=1
       Reason: SIP;cause=200;text="DeviceName=SEPAABBCCDDEEFF; ActiveLoadId=sip8865.12-1-1-12; InactiveLoadId=sip8865.cert-2014"
-      [authentication]
+      [authentication username=1010 password=ci-no-secret]
       Expires: 3600
       Content-Length: 0
 
@@ -127,7 +130,7 @@
       Max-Forwards: 70
       Contact: <sip:1010@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddeeff>";reg-id=1
       X-Test-Asserts: [$optionsind_outer] [$optionsind_inner]
-      [authentication]
+      [authentication username=1010 password=ci-no-secret]
       Expires: 0
       Content-Length: 0
 

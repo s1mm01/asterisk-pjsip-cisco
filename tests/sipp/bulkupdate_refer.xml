@@ -81,7 +81,7 @@
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
       Contact: <sip:1031@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
-      [authentication]
+      [authentication username=1031 password=ci-no-secret]
       Expires: 3600
       Content-Length: 0
 

@@ -78,7 +78,7 @@
 
   <!-- ============================================================
        Step 3: PUBLISH with Authorization. Re-send the full body
-       (SIPp [authentication] only adds the Authorization header;
+       (SIPp [authentication username=1050 password=ci-no-secret] only adds the Authorization header;
        body has to be present again).
        ============================================================ -->
   <send retrans="500">
@@ -94,7 +94,7 @@
       Max-Forwards: 70
       Event: presence
       Expires: 3600
-      [authentication]
+      [authentication username=1050 password=ci-no-secret]
       Content-Type: application/pidf+xml
       Content-Length: [len]
 

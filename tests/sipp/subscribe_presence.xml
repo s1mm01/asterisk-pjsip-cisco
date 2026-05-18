@@ -13,7 +13,7 @@
   Flow:
     1. SUBSCRIBE Event: presence, Expires: 3600.
     2. asterisk 401 with WWW-Authenticate.
-    3. SUBSCRIBE with Authorization (SIPp [authentication]).
+    3. SUBSCRIBE with Authorization (SIPp [authentication username=1010 password=ci-no-secret]).
     4. asterisk 200 OK (subscription accepted).
     5. asterisk pushes an immediate NOTIFY with the current
        presence state for 1050; assert the body matches the
@@ -80,7 +80,7 @@
       Contact: <sip:1010@[local_ip]:[local_port];transport=udp>
       Event: presence
       Accept: application/pidf+xml
-      [authentication]
+      [authentication username=1010 password=ci-no-secret]
       Expires: 3600
       Content-Length: 0
 
