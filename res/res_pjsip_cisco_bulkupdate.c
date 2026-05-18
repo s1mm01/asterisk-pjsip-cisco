@@ -154,57 +154,6 @@ static struct ast_taskprocessor *bulkupdate_serializer;
 static struct ao2_container *bulkupdate_addr_cache;
 
 /*!
- * \brief Aggregate MWI counts for an endpoint by walking its mailboxes=
- *        and AOR mailboxes= settings (the standard PJSIP convention).
- */
-static void compute_mwi(struct ast_sip_endpoint *endpoint,
-	int *mwi_new, int *mwi_old)
-{
-	*mwi_new = *mwi_old = 0;
-
-	if (!ast_strlen_zero(endpoint->subscription.mwi.mailboxes)) {
-		ast_app_inboxcount(endpoint->subscription.mwi.mailboxes,
-			mwi_new, mwi_old);
-		return;
-	}
-	if (ast_strlen_zero(endpoint->aors)) {
-		return;
-	}
-
-	{
-		struct ast_str *all_mb = ast_str_create(256);
-		char *aors_for_mwi;
-		char *aor_for_mwi;
-
-		if (!all_mb) {
-			return;
-		}
-		aors_for_mwi = ast_strdupa(endpoint->aors);
-		while ((aor_for_mwi = ast_strip(strsep(&aors_for_mwi, ",")))) {
-			struct ast_sip_aor *aor;
-			if (ast_strlen_zero(aor_for_mwi)) {
-				continue;
-			}
-			aor = ast_sip_location_retrieve_aor(aor_for_mwi);
-			if (!aor) {
-				continue;
-			}
-			if (!ast_strlen_zero(aor->mailboxes)) {
-				if (ast_str_strlen(all_mb)) {
-					ast_str_append(&all_mb, 0, ",");
-				}
-				ast_str_append(&all_mb, 0, "%s", aor->mailboxes);
-			}
-			ao2_ref(aor, -1);
-		}
-		if (ast_str_strlen(all_mb)) {
-			ast_app_inboxcount(ast_str_buffer(all_mb), mwi_new, mwi_old);
-		}
-		ast_free(all_mb);
-	}
-}
-
-/*!
  * \brief Append one <contact line="N">...</contact> block for \a endpoint
  *        (with its own MWI / CF state) to the bulkupdate body buffer.
  *
@@ -224,7 +173,7 @@ static void append_bulk_contact(struct ast_str **out,
 	char contact_buf[1024];
 	const char *endpoint_id = ast_sorcery_object_get_id(endpoint);
 
-	compute_mwi(endpoint, &mwi_new, &mwi_old);
+	cisco_endpoint_mwi_count(endpoint, &mwi_new, &mwi_old);
 
 	cf_target = cisco_cfwd_get(endpoint_id, cf_buf, sizeof(cf_buf));
 	if (!ast_strlen_zero(cf_target)

@@ -13,6 +13,7 @@
 
 #include "asterisk.h"
 
+#include "asterisk/app.h"
 #include "asterisk/astdb.h"
 #include "asterisk/astobj2.h"
 #include "asterisk/res_pjsip.h"
@@ -117,5 +118,59 @@ void cisco_cfwd_set(const char *endpoint_id, const char *target)
 		ast_db_del("CF", endpoint_id);
 	} else {
 		ast_db_put("CF", endpoint_id, target);
+	}
+}
+
+void cisco_endpoint_mwi_count(struct ast_sip_endpoint *endpoint,
+	int *mwi_new, int *mwi_old)
+{
+	*mwi_new = *mwi_old = 0;
+
+	if (!endpoint) {
+		return;
+	}
+
+	/* Stock PJSIP resolution order: endpoint->subscription.mwi.mailboxes
+	 * overrides everything if set; otherwise union the mailboxes= field
+	 * from each AOR in endpoint->aors. */
+	if (!ast_strlen_zero(endpoint->subscription.mwi.mailboxes)) {
+		ast_app_inboxcount(endpoint->subscription.mwi.mailboxes,
+			mwi_new, mwi_old);
+		return;
+	}
+	if (ast_strlen_zero(endpoint->aors)) {
+		return;
+	}
+
+	{
+		struct ast_str *all_mb = ast_str_create(256);
+		char *aors_for_mwi;
+		char *aor_for_mwi;
+
+		if (!all_mb) {
+			return;
+		}
+		aors_for_mwi = ast_strdupa(endpoint->aors);
+		while ((aor_for_mwi = ast_strip(strsep(&aors_for_mwi, ",")))) {
+			struct ast_sip_aor *aor;
+			if (ast_strlen_zero(aor_for_mwi)) {
+				continue;
+			}
+			aor = ast_sip_location_retrieve_aor(aor_for_mwi);
+			if (!aor) {
+				continue;
+			}
+			if (!ast_strlen_zero(aor->mailboxes)) {
+				if (ast_str_strlen(all_mb)) {
+					ast_str_append(&all_mb, 0, ",");
+				}
+				ast_str_append(&all_mb, 0, "%s", aor->mailboxes);
+			}
+			ao2_ref(aor, -1);
+		}
+		if (ast_str_strlen(all_mb)) {
+			ast_app_inboxcount(ast_str_buffer(all_mb), mwi_new, mwi_old);
+		}
+		ast_free(all_mb);
 	}
 }

@@ -118,4 +118,23 @@ const char *cisco_cfwd_get(const char *endpoint_id, char *buf, size_t buflen);
 void cisco_cfwd_set(const char *endpoint_id, const char *target);
 /* @} */
 
+/*!
+ * \brief Aggregate MWI counts across the endpoint's configured mailboxes.
+ *
+ * Resolution order matches stock PJSIP: endpoint->subscription.mwi.mailboxes
+ * if set (overrides everything); otherwise walk every AOR in endpoint->aors
+ * and union their mailboxes= settings. Counts are summed by
+ * ast_app_inboxcount.
+ *
+ * Both *new and *old are always written (zeroed on no mailboxes / no AORs /
+ * NULL endpoint), so the caller doesn't have to pre-initialise.
+ *
+ * Used by res_pjsip_cisco_bulkupdate.so to build the <emwi> element of the
+ * REGISTER-triggered bulkupdate REFER, and by 'pjsip cisco status' for
+ * read-only diagnostics. Sharing it keeps the two reports byte-identical;
+ * a future change to MWI resolution lands in one place.
+ */
+void cisco_endpoint_mwi_count(struct ast_sip_endpoint *endpoint,
+	int *mwi_new, int *mwi_old);
+
 #endif /* _RES_PJSIP_CISCO_ENDPOINT_H */

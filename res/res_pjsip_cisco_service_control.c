@@ -9,10 +9,11 @@
  *
  *   pjsip cisco status <endpoint>
  *      Read-only dump of the cisco sorcery config + registered
- *      contacts (URI / User-Agent / Via / expiry) + astdb feature
- *      state (DND / HuntGroup / CF). The shape you want when
- *      debugging "why don't the BLF lamps light" or "why doesn't
- *      DND register on the phone".
+ *      contacts (URI / User-Agent / Via / expiry) + MWI counts
+ *      bulkupdate would send + astdb feature state (DND / HuntGroup
+ *      / CF). The shape you want when debugging "why don't the BLF
+ *      lamps light" or "why doesn't DND register on the phone" or
+ *      "why is the MWI lamp wrong".
  *
  *   pjsip cisco check-sync <endpoint> [contact]
  *      Event: check-sync, Subscription-State: terminated, no body.
@@ -629,6 +630,21 @@ static char *cli_cisco_status(struct ast_cli_entry *e, int cmd,
 		ao2_iterator_destroy(&iter);
 	}
 	ao2_cleanup(contacts);
+
+	/* MWI counts — what bulkupdate puts in <emwi>. Resolution shares
+	 * cisco_endpoint_mwi_count() with bulkupdate's body builder, so the
+	 * counts reported here match exactly what the next REGISTER 200 OK
+	 * will trigger on the wire. NULL endpoint = both zero (no entry,
+	 * no panic). */
+	{
+		int mwi_new, mwi_old;
+
+		cisco_endpoint_mwi_count(endpoint, &mwi_new, &mwi_old);
+		ast_cli(a->fd, "\nMWI:\n");
+		ast_cli(a->fd, "  new:                      %d\n", mwi_new);
+		ast_cli(a->fd, "  old:                      %d\n", mwi_old);
+	}
+
 	ao2_cleanup(endpoint);
 
 	{
