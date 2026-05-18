@@ -59,17 +59,50 @@ Currently:
   PR — the pjproject-linked half of `make tests` is local-only
   because CI doesn't build pjproject static libs.
 
+- `test_blf_pidf` — golden-output test for
+  `cisco_blf_build_pidf` (the helper behind the unsolicited Event:
+  presence NOTIFYs). Compiles `res/cisco_unsolicited_blf/pidf.c`
+  against the shim Asterisk headers under `include/asterisk/` and
+  links it with the `ast_str_*` / `ast_sip_sanitize_xml`
+  implementations in `asterisk_stubs.c`. Exercises every documented
+  exten-state / presence-state combination plus XML-special escaping,
+  comparing each rendered body byte-for-byte against a golden literal
+  built from the documented wire shape. Catches activity-tag drift,
+  attribute-reorder, namespace edits, and missing escaping before
+  they reach a real Cisco phone. No pjproject linkage; the shim
+  headers / stub implementations let the helper run as a pure
+  function.
+
 ## Adding a unit test
 
-For pjlib-linked tests, the harness pattern is in `test_string_utils.c`:
+The right template depends on what the helper under test depends on.
 
-1. Copy it to `test_<name>.c`.
+**Pjproject primitives only** — copy `test_string_utils.c`. Already
+linked against pjproject; use this for code that calls
+`pj_str` / `pj_strcmp` / `pj_pool_*`.
+
+**Wire-format string templates** — copy `test_xml_bodies.c`. Uses
+libxml2 for structure validation, no Asterisk runtime, no pjproject.
+Right for `*_bodies.h`-style snprintf-template tests.
+
+**Body-building helpers that touch `ast_str_*` / Asterisk APIs** —
+copy `test_blf_pidf.c`. The helper to be tested needs to be
+extracted from its module's entry point file into its own
+sibling `.c` (compile target shared between the production `.so`
+build and the test). The Makefile rule for the test compiles a
+private copy of that `.c` against the stub headers in
+`include/asterisk/` and links with `asterisk_stubs.o`. If the
+helper uses an Asterisk API the stubs don't yet cover, extend
+`asterisk_stubs.c` + the matching header under `include/asterisk/`
+once; subsequent golden tests pick up the additions for free.
+
+For all three patterns:
+
+1. Write `test_<name>.c` with `main()` + `assert()`s.
 2. Append `<name>` to `UNIT_BINS` in `Makefile`.
-3. Write `main()` with `assert()`s.
-
-For libxml2-linked tests, copy `test_xml_bodies.c` instead — it has
-its own Makefile rule that uses pkg-config'd `libxml-2.0` rather than
-the pjproject link path.
+3. If you're following the third pattern, add the explicit Makefile
+   rule modelled on `test_blf_pidf` (the generic `%: %.c` rule
+   assumes pjproject linkage).
 
 ## What's intentionally NOT covered
 

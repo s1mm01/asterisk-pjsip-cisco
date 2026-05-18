@@ -6,10 +6,12 @@
 #             the AST_MODULE_INFO descriptor + load/unload symbols at
 #             the offsets the loader expects.
 #
-#   unit    — pjlib-linked C tests for genuinely-pure helpers. Lives
-#             below this Makefile in unit-tests/ ; today it carries
-#             one example (test_string_utils) demonstrating the
-#             pjlib-init pattern, which future tests can copy.
+#   unit    — standalone C tests with three flavours, picked per
+#             helper-under-test's dependency surface:
+#               * pjproject-only           (test_string_utils)
+#               * libxml2-only             (test_xml_bodies)
+#               * Asterisk-API + shim      (test_blf_pidf)
+#             See tests/unit/README.md for the "which template" guide.
 #
 # Invoke from the repository root via `make tests`, or directly with
 # `make -C tests/unit all` from a checkout.
@@ -73,7 +75,7 @@ PJPROJECT_LIBS := \
 endif
 endif
 
-UNIT_BINS := test_string_utils test_xml_bodies
+UNIT_BINS := test_string_utils test_xml_bodies test_blf_pidf
 
 # Asterisk's bundled pjproject patches malloc/free to route through
 # __ast_repl_malloc / __ast_free. Stubs link those symbols into the
@@ -125,12 +127,28 @@ unit: $(UNIT_BINS)
 	@echo "All $(words $(UNIT_BINS)) unit test(s) passed."
 
 asterisk_stubs.o: asterisk_stubs.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -I$(REPO_ROOT)/tests/unit/include -c -o $@ $<
 
 # test_xml_bodies is libxml2-linked (no pjproject), unlike the rest.
 # Explicit rule overrides the pattern rule below.
 test_xml_bodies: test_xml_bodies.c
 	$(CC) $(CFLAGS) $(BODY_INCLUDES) $(XML_CFLAGS) -o $@ $< $(XML_LIBS)
+
+# test_blf_pidf exercises cisco_blf_build_pidf as a pure function:
+# compiles a private copy of pidf.c against the stub asterisk headers
+# in tests/unit/include/, links it with the asterisk_stubs.c shims
+# (ast_str_*, ast_sip_sanitize_xml). No pjproject linkage; no real
+# Asterisk runtime touched. The -I order matters — the stub-include
+# path comes BEFORE any system include so #include <asterisk/*.h>
+# resolves to our shims, not to a system-installed asterisk-dev.
+PIDF_INCLUDES := \
+    -I$(REPO_ROOT)/tests/unit/include \
+    -I$(REPO_ROOT)/res/cisco_unsolicited_blf/include
+test_blf_pidf: test_blf_pidf.c $(REPO_ROOT)/res/cisco_unsolicited_blf/pidf.c \
+        asterisk_stubs.o
+	$(CC) $(CFLAGS) $(PIDF_INCLUDES) -o $@ \
+	    test_blf_pidf.c $(REPO_ROOT)/res/cisco_unsolicited_blf/pidf.c \
+	    asterisk_stubs.o
 
 %: %.c $(STUB_OBJS)
 	$(CC) $(CFLAGS) $(PJPROJECT_CFLAGS) -o $@ $< $(STUB_OBJS) \

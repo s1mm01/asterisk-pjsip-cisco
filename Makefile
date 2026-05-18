@@ -208,11 +208,11 @@ call_extras_HELPERS      := video
 conference_HELPERS       := state list confrn
 feature_events_HELPERS   := dnd mac
 remotecc_HELPERS         := mcid park record
+unsolicited_blf_HELPERS  := pidf
 
 # Single-file modules — declared empty for completeness.
 pidf_body_generator_HELPERS  :=
 register_optionsind_HELPERS  :=
-unsolicited_blf_HELPERS      :=
 service_control_HELPERS      :=
 
 # --------------------------------------------------------------------

@@ -61,6 +61,8 @@
 #include "cisco/rdata.h"
 #include "cisco/register.h"
 
+#include "pidf.h"
+
 static struct ast_taskprocessor *unsolicited_serializer;
 static struct ao2_container *unsolicited_addr_cache;
 
@@ -141,73 +143,6 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			p->exten, status_code, p->endpoint_id, p->contact_uri);
 	}
 	ao2_ref(p, -1);
-}
-
-/*
- * Build the Cisco-flavoured PIDF body for a given extension state.
- * Mirrors res_pjsip_cisco_pidf_body_generator + the chan_sip patch's
- * channels/sip/request.c:549-583.
- */
-static char *build_cisco_pidf(const char *exten, const char *domain,
-	int exten_state, int presence_state)
-{
-	struct ast_str *out;
-	char *result;
-	char exten_xml[PJSIP_MAX_URL_SIZE];
-	char domain_xml[PJSIP_MAX_URL_SIZE];
-
-	out = ast_str_create(1024);
-	if (!out) {
-		return NULL;
-	}
-
-	ast_sip_sanitize_xml(exten, exten_xml, sizeof(exten_xml));
-	ast_sip_sanitize_xml(domain, domain_xml, sizeof(domain_xml));
-
-	ast_str_set(&out, 0,
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<presence xmlns=\"urn:ietf:params:xml:ns:pidf\""
-		" xmlns:dm=\"urn:ietf:params:xml:ns:pidf:data-model\""
-		" xmlns:e=\"urn:ietf:params:xml:ns:pidf:status:rpid\""
-		" xmlns:ce=\"urn:cisco:params:xml:ns:pidf:rpid\""
-		" entity=\"sip:%s@%s\">\n"
-		"  <dm:person>\n"
-		"    <e:activities>\n",
-		exten_xml, domain_xml);
-
-	if (exten_state & AST_EXTENSION_RINGING) {
-		ast_str_append(&out, 0, "      <ce:alerting/>\n");
-	} else if (exten_state & (AST_EXTENSION_INUSE | AST_EXTENSION_ONHOLD | AST_EXTENSION_BUSY)) {
-		ast_str_append(&out, 0, "      <e:on-the-phone/>\n");
-	}
-	if (exten_state & AST_EXTENSION_BUSY) {
-		ast_str_append(&out, 0, "      <e:busy/>\n");
-	}
-	/* DND propagates via presence state, not device state — chan_sip's
-	 * sip_devicestate (channel_tech.c:1490+) and PJSIP's equivalent
-	 * both ignore peer->do_not_disturb. Mirror what
-	 * res_pjsip_cisco_pidf_body_generator does for in-dialog NOTIFYs:
-	 * emit Cisco's private <ce:dnd/> activity when the watched
-	 * extension's hint reports AST_PRESENCE_DND. */
-	if (presence_state == AST_PRESENCE_DND) {
-		ast_str_append(&out, 0, "      <ce:dnd/>\n");
-	}
-
-	ast_str_append(&out, 0,
-		"    </e:activities>\n"
-		"  </dm:person>\n"
-		"  <tuple id=\"%s\">\n"
-		"    <status>\n"
-		"      <basic>%s</basic>\n"
-		"    </status>\n"
-		"  </tuple>\n"
-		"</presence>\n",
-		exten_xml,
-		(exten_state == AST_EXTENSION_UNAVAILABLE) ? "closed" : "open");
-
-	result = ast_strdup(ast_str_buffer(out));
-	ast_free(out);
-	return result;
 }
 
 /*
@@ -336,7 +271,7 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 			ast_sorcery_object_get_id(endpoint));
 	}
 
-	xml = build_cisco_pidf(exten, local_domain, exten_state, presence_state);
+	xml = cisco_blf_build_pidf(exten, local_domain, exten_state, presence_state);
 	if (!xml) {
 		pjsip_tx_data_dec_ref(tdata);
 		return -1;
