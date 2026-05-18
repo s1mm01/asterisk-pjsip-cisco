@@ -647,6 +647,16 @@ static char *cli_cisco_status(struct ast_cli_entry *e, int cmd,
 				"  (no entry — endpoint hasn't REGISTERed since module "
 				"load, or its Contact carried no +sip.instance MAC)\n");
 		} else {
+			if (strcmp(dev.endpoint_id, a->argv[3])) {
+				/* Multi-line phone: the queried endpoint is the primary
+				 * (the one with aliases=), but a sibling line registered
+				 * most recently and won the MAC-keyed slot. The device
+				 * facts (MAC, firmware) still apply — same physical
+				 * phone — but flag the indirection so the operator knows. */
+				ast_cli(a->fd,
+					"  (matched via alias '%s' — same physical phone)\n",
+					dev.endpoint_id);
+			}
 			ast_cli(a->fd, "  MAC:                      %s\n", dev.mac);
 			ast_cli(a->fd, "  Source host:              %s\n", dev.src_host);
 			ast_cli(a->fd, "  Device name:              %s\n",

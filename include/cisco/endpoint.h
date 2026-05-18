@@ -201,10 +201,24 @@ void cisco_mac_forget(const char *mac);
 int cisco_mac_lookup_by_mac(const char *mac, struct cisco_mac_info *out);
 
 /*!
- * \brief Lookup by endpoint id. Returns the entry whose endpoint_id
- *        matches \a endpoint_id (the most-recent REGISTER for the
- *        device when several lines of a multi-line phone share a MAC).
- *        On match, copies into *out and returns 0; -1 on no match.
+ * \brief Lookup by endpoint id. On match, copies the live (non-
+ *        expired) entry into *out and returns 0; -1 on no match.
+ *
+ * Walk is alias-aware in one direction: if the direct lookup
+ * (entry->endpoint_id == \a endpoint_id) misses, the queried
+ * endpoint's cisco object's aliases= field is consulted and each
+ * alias is tried in turn. This handles the multi-line-phone case
+ * where the queried endpoint is the primary but one of its sibling
+ * lines won the most-recent REGISTER (the MAC-keyed slot stores
+ * the alias's id, not the primary's, but the device facts apply to
+ * both). The returned struct's endpoint_id field will name the
+ * matched alias rather than the queried primary — compare against
+ * \a endpoint_id to detect the indirection.
+ *
+ * The reverse direction (\a endpoint_id is itself an alias of some
+ * primary Y) is NOT walked — that would need an O(N_endpoints)
+ * scan of every cisco object's aliases= per status lookup. Operator
+ * workaround: query the primary, which has the aliases= field set.
  */
 int cisco_mac_lookup_by_endpoint(const char *endpoint_id,
 	struct cisco_mac_info *out);

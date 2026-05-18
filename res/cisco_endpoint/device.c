@@ -144,37 +144,86 @@ int cisco_mac_lookup_by_mac(const char *mac, struct cisco_mac_info *out)
 }
 
 /* Linear-walk predicate for cisco_mac_lookup_by_endpoint: returns
- * CMP_MATCH on the first entry whose endpoint_id equals \a arg. */
+ * CMP_MATCH on the first LIVE entry whose endpoint_id equals \a arg.
+ *
+ * Expired entries are skipped (return 0) so the walk continues past
+ * them — a multi-MAC endpoint (e.g. phone replacement before the old
+ * MAC's TTL elapsed, or two-phone shared line with max_contacts>1
+ * where the older REGISTER's entry hasn't aged out yet) can have an
+ * expired entry sitting at a lower hash-bucket position than the
+ * live one. Returning STOP on the expired hit would falsely report
+ * "no entry" to the caller. We don't unlink the expired entry inline
+ * — ao2_callback forbids container mutation during the walk — but
+ * the regular by-MAC path (lookup_by_mac, register-time replace) will
+ * collect it on next contact. */
 static int cisco_mac_endpoint_match(void *obj, void *arg, int flags)
 {
 	const struct cisco_mac_info *entry = obj;
 	const char *want = arg;
 
 	(void) flags;
-	return !strcmp(entry->endpoint_id, want) ? (CMP_MATCH | CMP_STOP) : 0;
+	if (strcmp(entry->endpoint_id, want)) {
+		return 0;
+	}
+	if (ast_tvdiff_ms(entry->expires, ast_tvnow()) <= 0) {
+		return 0;        /* expired — keep walking */
+	}
+	return CMP_MATCH | CMP_STOP;
 }
 
 int cisco_mac_lookup_by_endpoint(const char *endpoint_id,
 	struct cisco_mac_info *out)
 {
 	struct cisco_mac_info *entry;
+	struct cisco_endpoint *cisco;
 
 	if (!cisco_mac_map || ast_strlen_zero(endpoint_id) || !out) {
 		return -1;
 	}
+
+	/* Direct match: this endpoint is what we stored at REGISTER. */
 	entry = ao2_callback(cisco_mac_map, 0, cisco_mac_endpoint_match,
 		(void *) endpoint_id);
-	if (!entry) {
-		return -1;
-	}
-	if (ast_tvdiff_ms(entry->expires, ast_tvnow()) <= 0) {
-		ao2_unlink(cisco_mac_map, entry);
+	if (entry) {
+		*out = *entry;
 		ao2_ref(entry, -1);
-		return -1;
+		return 0;
 	}
-	*out = *entry;
-	ao2_ref(entry, -1);
-	return 0;
+
+	/* Alias fallback: this endpoint is the primary on a multi-line
+	 * phone; one of its aliases REGISTERed most recently and won the
+	 * MAC-keyed slot. The physical device is the same, so its facts
+	 * (MAC, src_host, device_name, firmware) are correct to return —
+	 * the stored endpoint_id field will name the alias rather than
+	 * the queried primary, which the caller can mention or ignore.
+	 *
+	 * Limit to one direction: queried endpoint X is primary, walk X's
+	 * aliases=. We don't walk the reverse direction (X is itself an
+	 * alias of some primary Y) because that would need an O(N_endpoints)
+	 * scan of every cisco object's aliases field per status lookup; the
+	 * operator-facing workaround is "run status on the primary" and is
+	 * documented in the CLI usage. */
+	cisco = cisco_endpoint_get(endpoint_id);
+	if (cisco && !ast_strlen_zero(cisco->aliases)) {
+		char *aliases = ast_strdupa(cisco->aliases);
+		char *alias;
+
+		while ((alias = ast_strip(strsep(&aliases, ",")))) {
+			if (ast_strlen_zero(alias)) {
+				continue;
+			}
+			entry = ao2_callback(cisco_mac_map, 0,
+				cisco_mac_endpoint_match, alias);
+			if (entry) {
+				*out = *entry;
+				ao2_ref(entry, -1);
+				ao2_cleanup(cisco);
+				return 0;
+			}
+		}
+	}
+	ao2_cleanup(cisco);
+	return -1;
 }
 
 /* Internal — called from res_pjsip_cisco_endpoint.c's load_module. */
