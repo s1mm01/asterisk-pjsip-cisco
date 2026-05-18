@@ -312,6 +312,13 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 	ast_copy_string(info.endpoint_id, endpoint_id, sizeof(info.endpoint_id));
 	ast_copy_string(info.src_host, rdata->pkt_info.src_name,
 		sizeof(info.src_host));
+	/* Call-ID lets 'pjsip cisco status' attribute device facts to the
+	 * specific contact that produced them, instead of conflating
+	 * multiple contacts under one endpoint-keyed lookup. */
+	if (rdata->msg_info.cid) {
+		ast_copy_pj_str(info.call_id, &rdata->msg_info.cid->id,
+			sizeof(info.call_id));
+	}
 	info.expires = ast_tvnow();
 	info.expires.tv_sec += ttl + 60;     /* small grace past the registration */
 

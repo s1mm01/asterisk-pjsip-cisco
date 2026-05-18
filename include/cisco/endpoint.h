@@ -181,6 +181,12 @@ struct cisco_mac_info {
 	char device_name[32];
 	char active_load[64];
 	char inactive_load[64];
+	/* Call-ID of the REGISTER that produced this entry. Per-contact
+	 * status lookup uses it as the join key from ast_sip_contact->
+	 * call_id; both sides are updated on every REGISTER refresh so
+	 * they stay in lockstep. Sized for a typical Call-ID worst case
+	 * (RFC-permitted but rare large values get truncated). */
+	char call_id[256];
 	struct timeval expires;
 };
 
@@ -221,6 +227,20 @@ int cisco_mac_lookup_by_mac(const char *mac, struct cisco_mac_info *out);
  * workaround: query the primary, which has the aliases= field set.
  */
 int cisco_mac_lookup_by_endpoint(const char *endpoint_id,
+	struct cisco_mac_info *out);
+
+/*!
+ * \brief Lookup by Call-ID. On match, copies the live (non-expired)
+ *        entry into *out and returns 0; -1 on no match.
+ *
+ * Intended for per-contact attribution in 'pjsip cisco status' —
+ * each ast_sip_contact carries the REGISTER's Call-ID, and the
+ * device facts we harvested at REGISTER time are tagged with the
+ * same Call-ID. Matching the two yields contact-accurate device
+ * info even for multi-contact / multi-IP edge cases the
+ * endpoint-name-based lookup would conflate.
+ */
+int cisco_mac_lookup_by_call_id(const char *call_id,
 	struct cisco_mac_info *out);
 
 #endif /* _RES_PJSIP_CISCO_ENDPOINT_H */

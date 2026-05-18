@@ -226,6 +226,39 @@ int cisco_mac_lookup_by_endpoint(const char *endpoint_id,
 	return -1;
 }
 
+static int cisco_mac_call_id_match(void *obj, void *arg, int flags)
+{
+	const struct cisco_mac_info *entry = obj;
+	const char *want = arg;
+
+	(void) flags;
+	if (strcmp(entry->call_id, want)) {
+		return 0;
+	}
+	if (ast_tvdiff_ms(entry->expires, ast_tvnow()) <= 0) {
+		return 0;        /* expired — keep walking */
+	}
+	return CMP_MATCH | CMP_STOP;
+}
+
+int cisco_mac_lookup_by_call_id(const char *call_id,
+	struct cisco_mac_info *out)
+{
+	struct cisco_mac_info *entry;
+
+	if (!cisco_mac_map || ast_strlen_zero(call_id) || !out) {
+		return -1;
+	}
+	entry = ao2_callback(cisco_mac_map, 0, cisco_mac_call_id_match,
+		(void *) call_id);
+	if (!entry) {
+		return -1;
+	}
+	*out = *entry;
+	ao2_ref(entry, -1);
+	return 0;
+}
+
 /* Internal — called from res_pjsip_cisco_endpoint.c's load_module. */
 int cisco_mac_container_init(void);
 int cisco_mac_container_init(void)

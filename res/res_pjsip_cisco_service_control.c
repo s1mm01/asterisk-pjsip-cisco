@@ -609,64 +609,52 @@ static char *cli_cisco_status(struct ast_cli_entry *e, int cmd,
 		while ((contact = ao2_iterator_next(&iter))) {
 			struct timeval now = ast_tvnow();
 			int64_t expires_ms = ast_tvdiff_ms(contact->expiration_time, now);
+			struct cisco_mac_info dev;
 
 			++contact_count;
 			ast_cli(a->fd, "  Contact #%d:\n", contact_count);
-			ast_cli(a->fd, "    URI:        %s\n", contact->uri);
-			ast_cli(a->fd, "    User-Agent: %s\n",
+			ast_cli(a->fd, "    URI:              %s\n", contact->uri);
+			ast_cli(a->fd, "    User-Agent:       %s\n",
 				S_OR(contact->user_agent, "(unknown)"));
-			ast_cli(a->fd, "    Via:        %s:%d\n",
+			ast_cli(a->fd, "    Via:              %s:%d\n",
 				S_OR(contact->via_addr, "(unknown)"), contact->via_port);
 			ast_cli(a->fd, "    REGISTER Call-ID: %s\n",
 				S_OR(contact->call_id, "(unknown)"));
 			if (expires_ms > 0) {
-				ast_cli(a->fd, "    Expires in: %lld seconds\n",
+				ast_cli(a->fd, "    Expires in:       %lld seconds\n",
 					(long long) (expires_ms / 1000));
 			} else {
 				ast_cli(a->fd,
-					"    Expires in: (expired %lld seconds ago)\n",
+					"    Expires in:       (expired %lld seconds ago)\n",
 					(long long) (-expires_ms / 1000));
+			}
+
+			/* Cisco device facts — what we learned from the REGISTER
+			 * that produced this contact (Contact +sip.instance for MAC
+			 * + src_host; Reason header for device_name / active_load /
+			 * inactive_load when the phone is configured for
+			 * cisco-usecallmanager-style Reason reporting). Joined to
+			 * the contact by Call-ID; both sides are updated on each
+			 * REGISTER refresh so they stay in lockstep. */
+			if (!ast_strlen_zero(contact->call_id)
+				&& !cisco_mac_lookup_by_call_id(contact->call_id, &dev)) {
+				ast_cli(a->fd, "    Cisco device:\n");
+				ast_cli(a->fd, "      MAC:                    %s\n",
+					dev.mac);
+				ast_cli(a->fd, "      Source host:            %s\n",
+					dev.src_host);
+				ast_cli(a->fd, "      Device name:            %s\n",
+					S_OR(dev.device_name, "(no Reason header)"));
+				ast_cli(a->fd, "      Active firmware load:   %s\n",
+					S_OR(dev.active_load, "(no Reason header)"));
+				ast_cli(a->fd, "      Inactive firmware load: %s\n",
+					S_OR(dev.inactive_load, "(no Reason header)"));
 			}
 			ao2_cleanup(contact);
 		}
 		ao2_iterator_destroy(&iter);
 	}
 	ao2_cleanup(contacts);
-
-	/* Cisco device facts — what we learned from REGISTER (Contact
-	 * +sip.instance for MAC + src_host; Reason header for device_name /
-	 * active_load / inactive_load when the phone is configured for
-	 * cisco-usecallmanager-style Reason reporting). Mirrors the per-peer
-	 * fields the chan_sip patch exposes via 'sip show peer'. */
-	{
-		struct cisco_mac_info dev;
-
-		ast_cli(a->fd, "\nCisco device (from REGISTER):\n");
-		if (cisco_mac_lookup_by_endpoint(a->argv[3], &dev)) {
-			ast_cli(a->fd,
-				"  (no entry — endpoint hasn't REGISTERed since module "
-				"load, or its Contact carried no +sip.instance MAC)\n");
-		} else {
-			if (strcmp(dev.endpoint_id, a->argv[3])) {
-				/* Multi-line phone: the queried endpoint is the primary
-				 * (the one with aliases=), but a sibling line registered
-				 * most recently and won the MAC-keyed slot. The device
-				 * facts (MAC, firmware) still apply — same physical
-				 * phone — but flag the indirection so the operator knows. */
-				ast_cli(a->fd,
-					"  (matched via alias '%s' — same physical phone)\n",
-					dev.endpoint_id);
-			}
-			ast_cli(a->fd, "  MAC:                      %s\n", dev.mac);
-			ast_cli(a->fd, "  Source host:              %s\n", dev.src_host);
-			ast_cli(a->fd, "  Device name:              %s\n",
-				S_OR(dev.device_name, "(no Reason header)"));
-			ast_cli(a->fd, "  Active firmware load:     %s\n",
-				S_OR(dev.active_load, "(no Reason header)"));
-			ast_cli(a->fd, "  Inactive firmware load:   %s\n",
-				S_OR(dev.inactive_load, "(no Reason header)"));
-		}
-	}
 
 	/* MWI counts — what bulkupdate puts in <emwi>. Resolution shares
 	 * cisco_endpoint_mwi_count() with bulkupdate's body builder, so the
