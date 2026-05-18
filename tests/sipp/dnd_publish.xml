@@ -38,7 +38,7 @@
     <![CDATA[
 
       PUBLISH sip:1050@[remote_ip]:[remote_port] SIP/2.0
-      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
       From: <sip:1050@[remote_ip]>;tag=[call_number]
       To: <sip:1050@[remote_ip]>
       Call-ID: [call_id]
@@ -85,7 +85,7 @@
     <![CDATA[
 
       PUBLISH sip:1050@[remote_ip]:[remote_port] SIP/2.0
-      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
       From: <sip:1050@[remote_ip]>;tag=[call_number]
       To: <sip:1050@[remote_ip]>
       Call-ID: [call_id]

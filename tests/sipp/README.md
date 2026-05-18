@@ -121,7 +121,9 @@ Requires:
 
 - `sip-tester` (Debian/Ubuntu) installed — provides the `sipp`
   binary
-- asterisk running with `tests/ci/pjsip.conf` loaded
+- asterisk running with `tests/ci/pjsip.conf` loaded (declares a
+  TCP transport on 127.0.0.1:5160 — Cisco Enterprise SIP firmware
+  is SIP-over-TCP only, so the test scenarios match)
 - The modules from this project installed (`sudo make install`)
 
 ```sh

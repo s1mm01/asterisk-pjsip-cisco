@@ -52,14 +52,14 @@
     <![CDATA[
 
       REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
-      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
       From: <sip:1031@[remote_ip]>;tag=[call_number]
       To: <sip:1031@[remote_ip]>
       Call-ID: [call_id]
       CSeq: 1 REGISTER
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
-      Contact: <sip:1031@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
+      Contact: <sip:1031@[local_ip]:[local_port];transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
       Expires: 3600
       Content-Length: 0
 
@@ -73,14 +73,14 @@
     <![CDATA[
 
       REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
-      Via: SIP/2.0/UDP [local_ip]:[local_port];rport;branch=[branch]
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
       From: <sip:1031@[remote_ip]>;tag=[call_number]
       To: <sip:1031@[remote_ip]>
       Call-ID: [call_id]
       CSeq: 2 REGISTER
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
-      Contact: <sip:1031@[local_ip]:[local_port];transport=udp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
+      Contact: <sip:1031@[local_ip]:[local_port];transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>";reg-id=1
       [authentication username=1031 password=ci-no-secret]
       Expires: 3600
       Content-Length: 0

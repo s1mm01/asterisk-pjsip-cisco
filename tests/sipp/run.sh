@@ -69,6 +69,7 @@ run_scenario() {
         -sf "$scenario" \
         -m 1 \
         -p "$SIPP_LOCAL_PORT" \
+        -t t1 \
         -bg \
         -nostdin \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.err" \
@@ -77,6 +78,14 @@ run_scenario() {
         "$ASTERISK_HOST:$ASTERISK_PORT" \
         < /dev/null
 }
+
+# -t t1 — TCP transport, single connection. Cisco Enterprise SIP
+# firmware on real CP-78xx / 88xx phones is SIP-over-TCP only, and
+# tests/ci/pjsip.conf accordingly declares a TCP-only transport
+# bound to 127.0.0.1:5160. UDP fallback is intentionally absent —
+# if the modules ever regress to assuming UDP-only retransmit
+# semantics or short body buffers (Cisco bulkupdate REFER bodies
+# routinely exceed 1.5 KB), CI surfaces it here instead of bench.
 
 # Sorted iteration so register_optionsind runs first (subscribe_presence
 # happens to follow alphabetically; if a future scenario needs an
