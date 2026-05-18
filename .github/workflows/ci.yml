@@ -404,6 +404,17 @@ jobs:
           make
           sudo --preserve-env=PJPROJECT_INCLUDE make install
 
+      - name: install test pjsip.conf
+        # Drop in a known-good pjsip.conf with a spread of [type=cisco]
+        # sections so sorcery type registration + field validation runs
+        # against real config. Apt's asterisk-config ships a default
+        # pjsip.conf with a transport but no endpoints — overwriting it
+        # is safe in the throwaway runner. Five endpoints (1010 / 1030 /
+        # 1031 / 1032 / 1050) exercise every documented type=cisco field
+        # at least once with a non-default value.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        run: sudo cp tests/ci/pjsip.conf /etc/asterisk/pjsip.conf
+
       - name: restart asterisk and wait for boot
         # `core waitfullybooted` is the hard barrier — without it
         # the verify step would race a still-loading asterisk.
@@ -470,6 +481,49 @@ jobs:
             exit 1
           fi
           echo "All 10 cisco_* modules Running."
+
+      - name: verify type=cisco sorcery config loaded
+        # Stock module-load tells us the .so files dlopened cleanly,
+        # but doesn't prove sorcery accepted the [type=cisco] field
+        # set we shipped in tests/ci/pjsip.conf. This step:
+        #
+        #   1) Confirms each expected endpoint is visible via
+        #      `pjsip show endpoint X`.
+        #   2) Confirms our own `pjsip cisco status X` reports
+        #      type=cisco section: yes for each, meaning sorcery
+        #      kept the section after validation.
+        #   3) Greps the asterisk log for the specific failure modes
+        #      that would surface if we'd shipped a sorcery field
+        #      without its matching <configOption> XML block, or
+        #      renamed a field without updating consumers.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        run: |
+          set -e
+          for ext in 1010 1030 1031 1032 1050; do
+            output=$(sudo asterisk -rx "pjsip show endpoint $ext")
+            if ! echo "$output" | grep -q " $ext"; then
+              echo "::error::endpoint $ext not loaded by asterisk"
+              echo "$output"
+              exit 1
+            fi
+            status=$(sudo asterisk -rx "pjsip cisco status $ext")
+            if ! echo "$status" | grep -qE "type=cisco section: +yes"; then
+              echo "::error::endpoint $ext has no type=cisco section per status"
+              echo "$status"
+              exit 1
+            fi
+          done
+          # Failure modes the per-endpoint check above doesn't surface.
+          # We grep messages.log because Ubuntu's logger.conf only writes
+          # there (not journalctl) — see the verify-modules step.
+          for f in /var/log/asterisk/*.log; do
+            [ -f "$f" ] || continue
+            if sudo grep -E "Cannot update type 'cisco'|failed to register sorcery type" "$f"; then
+              echo "::error::sorcery validation errors in $f"
+              exit 1
+            fi
+          done
+          echo "All 5 type=cisco sections loaded; no sorcery errors logged."
 
       - name: check asterisk log for cisco-related errors/warnings
         # Sorcery type registration failures, helper symbol misses,
