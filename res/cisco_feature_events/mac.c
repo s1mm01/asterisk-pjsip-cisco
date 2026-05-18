@@ -9,18 +9,31 @@
  * res_pjsip identifiers can't map sip:aabbccddeeff@phone-ip to an
  * endpoint, so the distributor 401s the request before
  * res_pjsip_cisco_remotecc ever sees it; the Authorization-username
- * identifier in res/cisco_feature_events/dnd.c (PATH B) only rescues the
+ * identifier in cisco_feature_events_dnd.c (PATH B) only rescues the
  * requests the phone actually retries with a usable Authorization
  * username.
  *
  * On every authenticated REGISTER from a Cisco endpoint we harvest
  * the device MAC out of the Contact header parameters
  * (+sip.instance's urn:uuid node, Cisco's
- * +u.sip!devicename.ccm.cisco.com="SEPxxxx", or a bare 12-hex value)
- * and remember MAC -> {endpoint id, source IP, expiry}.
- * cisco_mac_identify then resolves a later request whose From-URI
- * user is one of those MACs back to that endpoint, gated on the
- * request arriving from the same source IP the REGISTER did.
+ * +u.sip!devicename.ccm.cisco.com="SEPxxxxxxxxxxxx", or a bare 12-hex
+ * value) AND the device name + firmware versions out of the Reason
+ * header (when the phone is configured for chan_sip-style
+ * cisco-usecallmanager Reason reporting, the firmware sends e.g.:
+ *
+ *   Reason: SIP;cause=200;text="Name=SEPAABBCCDDEEFF
+ *                                ActiveLoad=sip78xx.14-1-1-0123
+ *                                InactiveLoad=sip78xx.13-1-0-1234"
+ *
+ * — single-line in the wire format; broken here for readability). All
+ * of these facts go into the shared cisco_mac_info container that lives
+ * in res_pjsip_cisco_endpoint.so (see include/cisco/endpoint.h), so
+ * cisco_mac_identify (this file, PATH C) and 'pjsip cisco status' both
+ * see the same data.
+ *
+ * cisco_mac_identify then resolves a later request whose From-URI user
+ * is one of those MACs back to that endpoint, gated on the request
+ * arriving from the same source IP the REGISTER did.
  *
  * See the file header essay in res_pjsip_cisco_feature_events.c for
  * the full rationale.
@@ -43,66 +56,6 @@
 #include "cisco/endpoint.h"
 #include "cisco/rdata.h"
 #include "feature_events_private.h"
-
-#define CISCO_MAC_LEN 12
-
-/* MAC -> endpoint hint, learned from authenticated REGISTERs. Purely a
- * lookup aid for the distributor; rebuilt on the next REGISTER, so a
- * stale or missing entry just costs one failed identification. Entries
- * are immutable once linked (a re-REGISTER replaces rather than mutates),
- * so readers need no per-entry lock. */
-struct cisco_mac_entry {
-	struct timeval expires;          /* when this hint goes stale */
-	char src_host[64];               /* source IP the REGISTER came from */
-	char endpoint_id[128];           /* the cisco endpoint that REGISTERed */
-	char mac[CISCO_MAC_LEN + 1];     /* 12 lowercase hex digits, NUL-term */
-};
-
-static struct ao2_container *cisco_mac_map;
-
-static int cisco_mac_hash_fn(const void *obj, int flags)
-{
-	const struct cisco_mac_entry *entry = obj;
-	const char *key;
-
-	switch (flags & OBJ_SEARCH_MASK) {
-	case OBJ_SEARCH_KEY:
-		key = obj;
-		break;
-	case OBJ_SEARCH_OBJECT:
-		key = entry->mac;
-		break;
-	default:
-		ast_assert(0);
-		return 0;
-	}
-	return ast_str_hash(key);
-}
-
-static int cisco_mac_cmp_fn(void *obj, void *arg, int flags)
-{
-	const struct cisco_mac_entry *left = obj;
-	const char *right_key = arg;
-
-	switch (flags & OBJ_SEARCH_MASK) {
-	case OBJ_SEARCH_OBJECT:
-		right_key = ((struct cisco_mac_entry *) arg)->mac;
-		/* Fall through */
-	case OBJ_SEARCH_KEY:
-		if (strcmp(left->mac, right_key)) {
-			return 0;
-		}
-		break;
-	case OBJ_SEARCH_PARTIAL_KEY:
-		if (strncmp(left->mac, right_key, strlen(right_key))) {
-			return 0;
-		}
-		break;
-	default:
-		return 0;
-	}
-	return CMP_MATCH | CMP_STOP;
-}
 
 /* Copy a 12-hex-digit lowercase MAC out of \a in into \a out (caller
  * buffer >= CISCO_MAC_LEN + 1). Succeeds only when \a in is exactly 12
@@ -166,10 +119,125 @@ static int cisco_mac_from_param_value(const pj_str_t *pjval, char *out)
 	return cisco_mac_normalize(v, out);
 }
 
+/* Parse one "Name=foo" / "ActiveLoad=foo" / etc. token out of \a src.
+ * Token format: KEY=VALUE separated from siblings by whitespace; VALUE
+ * may have a ".loads" suffix that the chan_sip patch strips (firmware
+ * versions in the wire form are e.g. "sip78xx.14-1-1-0123.loads"; the
+ * canonical CLI form is the ".loads"-less prefix).
+ *
+ * Returns 1 if \a key was found and \a out filled, 0 otherwise. \a out
+ * is sized to hold the chan_sip patch's largest field
+ * (cisco_inactiveload is the longest in practice). */
+static int reason_extract(const char *src, const char *key,
+	char *out, size_t outlen)
+{
+	const char *hit;
+	const char *end;
+	size_t klen = strlen(key);
+	char buf[128];
+	char *suffix;
+
+	if (!src || !*src) {
+		out[0] = '\0';
+		return 0;
+	}
+	/* Match " <key>=" so e.g. "ActiveLoad=" doesn't pick up the tail
+	 * of a longer key. The space gate also stops false matches inside
+	 * quoted-string content; the Reason text= field is itself a quoted
+	 * string in the wire format but our caller strips the quotes. */
+	{
+		char needle[64];
+
+		snprintf(needle, sizeof(needle), " %s=", key);
+		hit = strstr(src, needle);
+		if (!hit) {
+			/* Also try at the very start (no leading space). */
+			if (!strncmp(src, needle + 1, klen + 1)) {
+				hit = src - 1;            /* point one char before the key */
+			} else {
+				out[0] = '\0';
+				return 0;
+			}
+		}
+	}
+	hit += 1 + klen + 1;   /* past " <key>=" */
+
+	end = strpbrk(hit, " \t\"");
+	if (!end) {
+		end = hit + strlen(hit);
+	}
+	if ((size_t) (end - hit) >= sizeof(buf)) {
+		out[0] = '\0';
+		return 0;        /* pathologically long; ignore */
+	}
+	memcpy(buf, hit, end - hit);
+	buf[end - hit] = '\0';
+
+	/* Trim trailing ".loads" suffix on firmware-version fields. */
+	suffix = strstr(buf, ".loads");
+	if (suffix) {
+		*suffix = '\0';
+	}
+
+	ast_copy_string(out, buf, outlen);
+	return out[0] != '\0';
+}
+
+/* Parse the REGISTER's Reason header (text= field, when it follows the
+ * chan_sip patch's "SIP;cause=200;text=\"...\"" shape) and pull
+ * Cisco's Name= / ActiveLoad= / Load= / InactiveLoad= tokens into the
+ * info->device_name / active_load / inactive_load fields. Empties any
+ * unparseable field — older firmware without Reason reporting, or a
+ * non-Cisco REGISTER, just leaves them blank. */
+static void parse_reason_header(pjsip_msg *msg, struct cisco_mac_info *info)
+{
+	pj_str_t hdr_name = pj_str("Reason");
+	pjsip_generic_string_hdr *hdr;
+	char reason[512];
+	const char *text;
+	size_t len;
+
+	info->device_name[0] = '\0';
+	info->active_load[0] = '\0';
+	info->inactive_load[0] = '\0';
+
+	hdr = (pjsip_generic_string_hdr *) pjsip_msg_find_hdr_by_name(msg,
+		&hdr_name, NULL);
+	if (!hdr) {
+		return;
+	}
+	ast_copy_pj_str(reason, &hdr->hvalue, sizeof(reason));
+
+	/* The chan_sip patch only acts when the prefix is exactly
+	 * "SIP;cause=200;text=" — anything else is treated as a non-200
+	 * reason and ignored. Replicate. */
+	if (strncmp(reason, "SIP;cause=200;text=", 19)) {
+		return;
+	}
+	text = reason + 19;
+	if (*text == '"') {
+		text++;
+		len = strlen(text);
+		if (len && text[len - 1] == '"') {
+			reason[19 + 1 + len - 1] = '\0';
+		}
+	}
+
+	reason_extract(text, "Name", info->device_name, sizeof(info->device_name));
+	if (!reason_extract(text, "ActiveLoad",
+			info->active_load, sizeof(info->active_load))) {
+		/* Older firmware uses Load= rather than ActiveLoad=. */
+		reason_extract(text, "Load", info->active_load,
+			sizeof(info->active_load));
+	}
+	reason_extract(text, "InactiveLoad", info->inactive_load,
+		sizeof(info->inactive_load));
+}
+
 /* On every authenticated REGISTER from a Cisco endpoint, learn (or
- * refresh) the device MAC -> endpoint hint. expires=0 / Contact: * is a
- * de-registration: forget any hint for that MAC. Never claims the
- * request — the registrar still does its job. */
+ * refresh) the device MAC + device-name + firmware versions. expires=0
+ * / Contact: * is a de-registration: forget any hint for that MAC.
+ * Never claims the request — the registrar still does its job. */
 void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 {
 	struct ast_sip_endpoint *endpoint;
@@ -182,7 +250,7 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 	char mac[CISCO_MAC_LEN + 1];
 	int have_mac = 0;
 	long ttl = -1;
-	struct cisco_mac_entry *entry;
+	struct cisco_mac_info info;
 
 	endpoint = cisco_pjsip_module_match(rdata, "REGISTER", NULL);
 	if (!endpoint) {
@@ -229,7 +297,7 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 		ttl = expires_hdr ? expires_hdr->ivalue : 3600;
 	}
 	if (ttl <= 0) {
-		ao2_find(cisco_mac_map, mac, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
+		cisco_mac_forget(mac);
 		ast_debug(2, "cisco-mac-identify: forgot MAC %s "
 			"(de-registration from endpoint '%s')\n", mac, endpoint_id);
 		ao2_cleanup(endpoint);
@@ -239,26 +307,26 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 		ttl = 86400;
 	}
 
-	entry = ao2_alloc_options(sizeof(*entry), NULL, AO2_ALLOC_OPT_LOCK_NOLOCK);
-	if (!entry) {
-		ao2_cleanup(endpoint);
-		return;
-	}
-	ast_copy_string(entry->mac, mac, sizeof(entry->mac));
-	ast_copy_string(entry->endpoint_id, endpoint_id, sizeof(entry->endpoint_id));
-	ast_copy_string(entry->src_host, rdata->pkt_info.src_name,
-		sizeof(entry->src_host));
-	entry->expires = ast_tvnow();
-	entry->expires.tv_sec += ttl + 60;     /* small grace past the registration */
+	memset(&info, 0, sizeof(info));
+	ast_copy_string(info.mac, mac, sizeof(info.mac));
+	ast_copy_string(info.endpoint_id, endpoint_id, sizeof(info.endpoint_id));
+	ast_copy_string(info.src_host, rdata->pkt_info.src_name,
+		sizeof(info.src_host));
+	info.expires = ast_tvnow();
+	info.expires.tv_sec += ttl + 60;     /* small grace past the registration */
 
-	/* Replace any prior hint for this MAC (re-REGISTER, possibly from a
-	 * new address or under a different endpoint id). */
-	ao2_find(cisco_mac_map, mac, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
-	ao2_link(cisco_mac_map, entry);
+	/* Reason header (device name + firmware) is optional — older firmware
+	 * or phones not configured for cisco-usecallmanager Reason reporting
+	 * will simply leave these fields empty, which 'pjsip cisco status'
+	 * renders as "(unknown)". */
+	parse_reason_header(msg, &info);
+
+	cisco_mac_register(&info);
 	ast_debug(2, "cisco-mac-identify: learned MAC %s -> endpoint '%s' "
-		"from %s (ttl %lds)\n", mac, endpoint_id, entry->src_host, ttl);
+		"from %s (ttl %lds, device='%s' active='%s' inactive='%s')\n",
+		mac, endpoint_id, info.src_host, ttl,
+		info.device_name, info.active_load, info.inactive_load);
 
-	ao2_ref(entry, -1);
 	ao2_cleanup(endpoint);
 }
 
@@ -273,11 +341,11 @@ static struct ast_sip_endpoint *cisco_mac_identify(pjsip_rx_data *rdata)
 	pjsip_sip_uri *from_uri;
 	char user[64];
 	char mac[CISCO_MAC_LEN + 1];
-	struct cisco_mac_entry *entry;
+	struct cisco_mac_info info;
 	struct ast_sip_endpoint *endpoint;
 	struct cisco_endpoint *cisco;
 
-	if (!cisco_mac_map || !rdata || !rdata->msg_info.msg
+	if (!rdata || !rdata->msg_info.msg
 		|| rdata->msg_info.msg->type != PJSIP_REQUEST_MSG) {
 		return NULL;
 	}
@@ -296,33 +364,24 @@ static struct ast_sip_endpoint *cisco_mac_identify(pjsip_rx_data *rdata)
 		return NULL;       /* not a 12-hex MAC URI — nothing of ours */
 	}
 
-	entry = ao2_find(cisco_mac_map, mac, OBJ_SEARCH_KEY);
-	if (!entry) {
+	if (cisco_mac_lookup_by_mac(mac, &info)) {
 		return NULL;
 	}
-	if (ast_tvdiff_ms(entry->expires, ast_tvnow()) <= 0) {
-		ao2_unlink(cisco_mac_map, entry);
-		ao2_ref(entry, -1);
-		return NULL;
-	}
-	if (strcmp(entry->src_host, rdata->pkt_info.src_name)) {
+	if (strcmp(info.src_host, rdata->pkt_info.src_name)) {
 		ast_debug(2, "cisco-mac-identify: MAC %s learned from %s but request "
 			"arrived from %s — not matching\n",
-			mac, entry->src_host, rdata->pkt_info.src_name);
-		ao2_ref(entry, -1);
+			mac, info.src_host, rdata->pkt_info.src_name);
 		return NULL;
 	}
 
 	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "endpoint",
-		entry->endpoint_id);
+		info.endpoint_id);
 	if (!endpoint) {
-		ao2_ref(entry, -1);
 		return NULL;
 	}
-	cisco = cisco_endpoint_get(entry->endpoint_id);
+	cisco = cisco_endpoint_get(info.endpoint_id);
 	if (!cisco) {
 		ao2_cleanup(endpoint);
-		ao2_ref(entry, -1);
 		return NULL;
 	}
 	ao2_cleanup(cisco);
@@ -331,8 +390,7 @@ static struct ast_sip_endpoint *cisco_mac_identify(pjsip_rx_data *rdata)
 		"endpoint '%s'\n",
 		(int) rdata->msg_info.msg->line.req.method.name.slen,
 		rdata->msg_info.msg->line.req.method.name.ptr,
-		mac, entry->endpoint_id);
-	ao2_ref(entry, -1);
+		mac, info.endpoint_id);
 	return endpoint;
 }
 
@@ -342,17 +400,11 @@ static struct ast_sip_endpoint_identifier cisco_mac_identifier = {
 
 int cisco_feature_events_mac_init(void)
 {
-	cisco_mac_map = ao2_container_alloc_hash(AO2_ALLOC_OPT_LOCK_MUTEX, 0, 13,
-		cisco_mac_hash_fn, NULL, cisco_mac_cmp_fn);
-	if (!cisco_mac_map) {
-		ast_log(LOG_ERROR,
-			"cisco-feature-events: failed to allocate MAC -> endpoint map\n");
-		return -1;
-	}
+	/* The container itself lives in res_pjsip_cisco_endpoint.so —
+	 * see res/cisco_endpoint/device.c. This module just registers
+	 * the PATH C identifier and contributes REGISTER-time facts. */
 	if (ast_sip_register_endpoint_identifier_with_name(
 			&cisco_mac_identifier, "cisco_mac")) {
-		ao2_cleanup(cisco_mac_map);
-		cisco_mac_map = NULL;
 		ast_log(LOG_ERROR,
 			"cisco-feature-events: failed to register Cisco MAC-address "
 			"endpoint identifier\n");
@@ -364,6 +416,4 @@ int cisco_feature_events_mac_init(void)
 void cisco_feature_events_mac_shutdown(void)
 {
 	ast_sip_unregister_endpoint_identifier(&cisco_mac_identifier);
-	ao2_cleanup(cisco_mac_map);
-	cisco_mac_map = NULL;
 }

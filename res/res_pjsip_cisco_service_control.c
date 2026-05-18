@@ -617,6 +617,8 @@ static char *cli_cisco_status(struct ast_cli_entry *e, int cmd,
 				S_OR(contact->user_agent, "(unknown)"));
 			ast_cli(a->fd, "    Via:        %s:%d\n",
 				S_OR(contact->via_addr, "(unknown)"), contact->via_port);
+			ast_cli(a->fd, "    REGISTER Call-ID: %s\n",
+				S_OR(contact->call_id, "(unknown)"));
 			if (expires_ms > 0) {
 				ast_cli(a->fd, "    Expires in: %lld seconds\n",
 					(long long) (expires_ms / 1000));
@@ -630,6 +632,31 @@ static char *cli_cisco_status(struct ast_cli_entry *e, int cmd,
 		ao2_iterator_destroy(&iter);
 	}
 	ao2_cleanup(contacts);
+
+	/* Cisco device facts — what we learned from REGISTER (Contact
+	 * +sip.instance for MAC + src_host; Reason header for device_name /
+	 * active_load / inactive_load when the phone is configured for
+	 * cisco-usecallmanager-style Reason reporting). Mirrors the per-peer
+	 * fields the chan_sip patch exposes via 'sip show peer'. */
+	{
+		struct cisco_mac_info dev;
+
+		ast_cli(a->fd, "\nCisco device (from REGISTER):\n");
+		if (cisco_mac_lookup_by_endpoint(a->argv[3], &dev)) {
+			ast_cli(a->fd,
+				"  (no entry — endpoint hasn't REGISTERed since module "
+				"load, or its Contact carried no +sip.instance MAC)\n");
+		} else {
+			ast_cli(a->fd, "  MAC:                      %s\n", dev.mac);
+			ast_cli(a->fd, "  Source host:              %s\n", dev.src_host);
+			ast_cli(a->fd, "  Device name:              %s\n",
+				S_OR(dev.device_name, "(no Reason header)"));
+			ast_cli(a->fd, "  Active firmware load:     %s\n",
+				S_OR(dev.active_load, "(no Reason header)"));
+			ast_cli(a->fd, "  Inactive firmware load:   %s\n",
+				S_OR(dev.inactive_load, "(no Reason header)"));
+		}
+	}
 
 	/* MWI counts — what bulkupdate puts in <emwi>. Resolution shares
 	 * cisco_endpoint_mwi_count() with bulkupdate's body builder, so the

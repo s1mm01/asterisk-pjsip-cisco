@@ -136,6 +136,13 @@
 #include "cisco/endpoint.h"
 #include "cisco/orig_host.h"
 
+/* device.c — internal to this .so; only the entry file needs the
+ * lifecycle hooks (the public API in cisco/endpoint.h is what other
+ * modules call). Forward-declared here rather than promoted to the
+ * public header so they don't pollute the cross-.so surface. */
+int cisco_mac_container_init(void);
+void cisco_mac_container_shutdown(void);
+
 /*
  * Presence-state provider for DND. Lets a BLF hint of the form
  *
@@ -263,6 +270,18 @@ static int load_module(void)
 		return AST_MODULE_LOAD_DECLINE;
 	}
 
+	/* Shared cisco_mac_info container, populated at REGISTER time by
+	 * res_pjsip_cisco_feature_events.so and read by both that module's
+	 * cisco_mac_identify (PATH C) and 'pjsip cisco status'. See
+	 * res/cisco_endpoint/device.c. */
+	if (cisco_mac_container_init()) {
+		ast_log(LOG_ERROR, "cisco_endpoint: could not allocate "
+			"cisco_mac_info container\n");
+		cisco_orig_host_unregister();
+		ast_presence_state_prov_del("PJSIP");
+		return AST_MODULE_LOAD_DECLINE;
+	}
+
 	return AST_MODULE_LOAD_SUCCESS;
 }
 
@@ -284,6 +303,7 @@ static int unload_module(void)
 	if (!ast_shutdown_final()) {
 		return -1;
 	}
+	cisco_mac_container_shutdown();
 	cisco_orig_host_unregister();
 	ast_presence_state_prov_del("PJSIP");
 	return 0;

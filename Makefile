@@ -163,7 +163,7 @@ MODULES := \
     conference \
     remotecc
 
-endpoint_HELPERS         := endpoint orig_host rdata refer register session
+endpoint_HELPERS         := endpoint orig_host rdata refer register session device
 bulkupdate_HELPERS       := cli func
 call_extras_HELPERS      := video
 conference_HELPERS       := state list confrn

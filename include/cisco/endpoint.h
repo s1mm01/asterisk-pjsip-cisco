@@ -137,4 +137,76 @@ void cisco_cfwd_set(const char *endpoint_id, const char *target);
 void cisco_endpoint_mwi_count(struct ast_sip_endpoint *endpoint,
 	int *mwi_new, int *mwi_old);
 
+#define CISCO_MAC_LEN 12
+
+/*!
+ * \brief Per-device facts learned at REGISTER time.
+ *
+ * Populated by res_pjsip_cisco_feature_events from the inbound REGISTER's
+ * Contact +sip.instance / +u.sip params (for MAC + src_host + endpoint_id)
+ * and Reason header (for device_name + firmware versions, when the phone
+ * is configured for cisco-usecallmanager-style Reason reporting). Stored
+ * in res_pjsip_cisco_endpoint.so so multiple consumers see the same data:
+ *
+ *  - cisco_mac_identify (PATH C — distributor lookup by MAC URI)
+ *  - 'pjsip cisco status' (diagnostic dump by endpoint id)
+ *
+ * Lifetime: entries auto-expire ttl-seconds after registration. A
+ * re-REGISTER replaces by MAC; Contact: * forgets.
+ *
+ * Field semantics:
+ *   mac            12 lowercase hex digits.
+ *   src_host       source-IP / hostname the REGISTER arrived from.
+ *                  PATH C gates MAC identification on this matching the
+ *                  current request's source.
+ *   endpoint_id    Cisco endpoint that REGISTERed (most-recent winner
+ *                  when several lines of a multi-line phone share a MAC).
+ *   device_name    "SEPxxxxxxxxxxxx", from Reason "Name=...". Empty when
+ *                  the phone wasn't configured for Reason reporting or
+ *                  sent no Reason header at all.
+ *   active_load    Running firmware version, from Reason "ActiveLoad="
+ *                  (or "Load=" on older phones). Empty when unknown.
+ *   inactive_load  Alternate partition's firmware version, from Reason
+ *                  "InactiveLoad=". Empty when unknown.
+ *   expires        Absolute timestamp; entry treated as stale past this.
+ *
+ * Three-string Reason-header fields are stored as-parsed (no quoting,
+ * no NULL — empty string when absent), matching what the chan_sip
+ * cisco-usecallmanager patch's peer->cisco_devicename etc. look like.
+ */
+struct cisco_mac_info {
+	char mac[CISCO_MAC_LEN + 1];
+	char src_host[64];
+	char endpoint_id[128];
+	char device_name[32];
+	char active_load[64];
+	char inactive_load[64];
+	struct timeval expires;
+};
+
+/*!
+ * \brief Insert / replace by MAC. The caller's struct is copied; the
+ *        container owns its data thereafter. Returns 0 on success, -1
+ *        on allocation failure or empty MAC.
+ */
+int cisco_mac_register(const struct cisco_mac_info *info);
+
+/*! \brief Forget the entry for \a mac (no-op if absent). */
+void cisco_mac_forget(const char *mac);
+
+/*!
+ * \brief Lookup by MAC. On match, copies the entry into *out and
+ *        returns 0. Returns -1 if no live (non-expired) entry exists.
+ */
+int cisco_mac_lookup_by_mac(const char *mac, struct cisco_mac_info *out);
+
+/*!
+ * \brief Lookup by endpoint id. Returns the entry whose endpoint_id
+ *        matches \a endpoint_id (the most-recent REGISTER for the
+ *        device when several lines of a multi-line phone share a MAC).
+ *        On match, copies into *out and returns 0; -1 on no match.
+ */
+int cisco_mac_lookup_by_endpoint(const char *endpoint_id,
+	struct cisco_mac_info *out);
+
 #endif /* _RES_PJSIP_CISCO_ENDPOINT_H */
