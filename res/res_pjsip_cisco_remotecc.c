@@ -411,11 +411,28 @@ static pj_bool_t remotecc_on_rx_request(pjsip_rx_data *rdata)
 		return PJ_TRUE;
 	}
 
-	if (request_content_type_is(rdata, "application", "x-cisco-alarm+xml")
-		|| request_content_type_is(rdata, "application",
-			"x-cisco-remotecc-response+xml")) {
+	if (request_content_type_is(rdata, "application", "x-cisco-alarm+xml")) {
+		/* Phone-originated alarm event (firmware-reported device-side
+		 * condition: registration loss, line-state change, error,
+		 * etc.). Worth a NOTICE — these correspond to real things
+		 * happening on the device. */
 		ast_log(LOG_NOTICE,
-			"cisco-remotecc: accepted device notification from %s\n",
+			"cisco-remotecc: accepted alarm from %s\n", endpoint_id);
+		cisco_send_refer_response(rdata, 202, endpoint);
+		ao2_cleanup(endpoint);
+		return PJ_TRUE;
+	}
+
+	if (request_content_type_is(rdata, "application",
+			"x-cisco-remotecc-response+xml")) {
+		/* The phone's 202-style ack of a REFER we sent (bulkupdate,
+		 * optionsind, unsolicited NOTIFY, service-control, etc.).
+		 * Routine: one per outgoing REFER per registered contact —
+		 * a single bulkupdate against an endpoint with N contacts
+		 * generates N of these, every REGISTER refresh. ast_debug
+		 * rather than NOTICE so it doesn't dominate the log. */
+		ast_debug(2,
+			"cisco-remotecc: accepted remotecc-response from %s\n",
 			endpoint_id);
 		cisco_send_refer_response(rdata, 202, endpoint);
 		ao2_cleanup(endpoint);
