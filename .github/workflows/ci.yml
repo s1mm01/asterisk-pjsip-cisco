@@ -432,6 +432,7 @@ jobs:
         run: |
           sudo cp tests/ci/pjsip.conf      /etc/asterisk/pjsip.conf
           sudo cp tests/ci/extensions.conf /etc/asterisk/extensions.conf
+          sudo cp tests/ci/logger.conf     /etc/asterisk/logger.conf
 
       - name: restart asterisk and wait for boot
         # `core waitfullybooted` is the hard barrier — without it

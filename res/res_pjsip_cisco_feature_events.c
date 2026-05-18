@@ -207,7 +207,29 @@ static pj_bool_t subscribe_expires_clamp_on_rx_request(pjsip_rx_data *rdata)
  * we wouldn't want clamp to mutate the request first). */
 static pj_bool_t cisco_feature_events_on_rx_request(pjsip_rx_data *rdata)
 {
+	/* DEBUG: temporary trace to confirm dispatch on every inbound
+	 * request — drop before merging once the dnd_publish 489 is
+	 * diagnosed. */
+	if (rdata && rdata->msg_info.msg
+		&& rdata->msg_info.msg->type == PJSIP_REQUEST_MSG) {
+		pj_str_t method = rdata->msg_info.msg->line.req.method.name;
+		pjsip_generic_string_hdr *event_hdr;
+		pj_str_t event_name = pj_str("Event");
+		char ev[64] = "(none)";
+
+		event_hdr = (pjsip_generic_string_hdr *) pjsip_msg_find_hdr_by_name(
+			rdata->msg_info.msg, &event_name, NULL);
+		if (event_hdr) {
+			ast_copy_pj_str(ev, &event_hdr->hvalue, sizeof(ev));
+		}
+		ast_log(LOG_NOTICE,
+			"cisco-feature-events DEBUG: on_rx_request method=%.*s event=%s\n",
+			(int) method.slen, method.ptr, ev);
+	}
+
 	if (cisco_feature_events_dnd_on_rx_request(rdata)) {
+		ast_log(LOG_NOTICE,
+			"cisco-feature-events DEBUG: dnd_on_rx_request claimed it\n");
 		return PJ_TRUE;
 	}
 	subscribe_expires_clamp_on_rx_request(rdata);
