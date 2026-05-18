@@ -364,7 +364,7 @@ jobs:
             asterisk asterisk-modules \
             asterisk-dev
 
-      - name: rebuild modules against apt asterisk-dev headers
+      - name: rebuild + install modules against apt asterisk-dev
         # The earlier `make` step compiled against the resolved
         # upstream tag (e.g. 20.13.x). That's our compile-time-
         # against-latest signal and stays the load-bearing check
@@ -380,7 +380,16 @@ jobs:
         # Rebuild without PJPROJECT_DIR so the Makefile picks up
         # /usr/include/asterisk from asterisk-dev (matching the
         # apt binary). PJPROJECT_INCLUDE still points at the
-        # fetched pjproject headers (no apt package for those).
+        # fetched pjproject headers (asterisk-dev does NOT ship
+        # pjproject headers — see `install asterisk runtime`).
+        #
+        # `make clean && make && sudo make install` runs in one
+        # step so PJPROJECT_INCLUDE stays in scope for all three
+        # (sudo --preserve-env carries it through `sudo make
+        # install`; the Makefile's check-headers prereq otherwise
+        # re-runs and fails when it can't find pjproject).
+        # ASTERISK_MODULES_DIR / ASTERISK_DOC_DIR auto-resolve
+        # from /etc/asterisk/asterisk.conf via the Makefile.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         env:
           PJPROJECT_INCLUDE: >-
@@ -393,16 +402,7 @@ jobs:
         run: |
           make clean
           make
-
-      - name: install our modules into the apt asterisk
-        # Bare `sudo make install` — the rebuild step above set up
-        # pkg-config / asterisk-dev resolution. ASTERISK_MODULES_DIR
-        # and ASTERISK_DOC_DIR auto-resolve from
-        # /etc/asterisk/asterisk.conf via the Makefile, so .so files
-        # land at the multiarch path the daemon expects and the doc
-        # XML lands under astdatadir/documentation.
-        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
-        run: sudo make install
+          sudo --preserve-env=PJPROJECT_INCLUDE make install
 
       - name: restart asterisk and wait for boot
         # `core waitfullybooted` is the hard barrier — without it
