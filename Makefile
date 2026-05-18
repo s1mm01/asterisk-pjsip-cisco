@@ -26,9 +26,33 @@
 # Configurable paths. Override on the command line or in environment
 # if your distro lays things out differently:
 #     make ASTERISK_MODULES_DIR=/opt/asterisk/lib/modules
+#
+# ASTERISK_MODULES_DIR resolution:
+#   1. Explicit override on the command line / environment.
+#   2. astmoddir from /etc/asterisk/asterisk.conf if the file exists.
+#      That's the authoritative source for where the running asterisk
+#      looks; Debian/Ubuntu's asterisk-config sets it to the multiarch
+#      path (/usr/lib/<triple>/asterisk/modules), upstream's default
+#      points at /usr/lib/asterisk/modules.
+#   3. Upstream default /usr/lib/asterisk/modules.
+# Resolution order ensures `sudo make install` lands modules where
+# the local asterisk binary will actually look for them, regardless
+# of distro packaging convention.
 # --------------------------------------------------------------------
 
+ASTERISK_CONF        ?= /etc/asterisk/asterisk.conf
+ifeq ($(strip $(ASTERISK_MODULES_DIR)),)
+ifneq ($(wildcard $(ASTERISK_CONF)),)
+# astmoddir line looks like:  astmoddir => /usr/lib/.../asterisk/modules
+# (asterisk.conf uses `=>` as the assignment operator in [directories];
+# the regex also tolerates a plain `=` for hand-edited configs).
+ASTERISK_MODULES_DIR := $(shell sed -nE \
+    's|^[[:space:]]*astmoddir[[:space:]]*=>?[[:space:]]*([^[:space:];]+).*|\1|p' \
+    $(ASTERISK_CONF) | head -1)
+endif
+endif
 ASTERISK_MODULES_DIR ?= /usr/lib/asterisk/modules
+
 ASTERISK_DOC_DIR     ?= /var/lib/asterisk/documentation
 ASTERISK_SAMPLE_DIR  ?= /usr/share/doc/asterisk-pjsip-cisco
 
@@ -359,7 +383,8 @@ help:
 	@echo
 	@echo "Common overrides:"
 	@echo "  ASTERISK_INCLUDE_DIR (default: $(ASTERISK_INCLUDE_DIR))"
-	@echo "  ASTERISK_MODULES_DIR (default: $(ASTERISK_MODULES_DIR))"
+	@echo "  ASTERISK_MODULES_DIR (default: $(ASTERISK_MODULES_DIR)"
+	@echo "                        — read from astmoddir in $(ASTERISK_CONF) if present)"
 	@echo "  ASTERISK_DOC_DIR     (default: $(ASTERISK_DOC_DIR))"
 	@echo "  OBJ_DIR              (default: $(OBJ_DIR))"
 	@echo "  MODULE_BUILD_DIR     (default: $(MODULE_BUILD_DIR))"
