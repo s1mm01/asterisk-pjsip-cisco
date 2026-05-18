@@ -254,3 +254,148 @@ jobs:
           # dh -> our Makefile.
           sudo apt-get install -y devscripts debhelper
           dpkg-buildpackage -us -uc -b -d
+
+  # ----------------------------------------------------------------
+  # Asterisk module-load smoke test.
+  #
+  # The 'build' matrix above proves our .so files compile and have the
+  # required loader symbols. It doesn't actually load them. A struct-
+  # offset ABI mismatch, a sorcery type registration that silently fails,
+  # a body-generator priority race, or a missing dlsym dependency would
+  # all pass that matrix and only fail when an operator restarts
+  # asterisk on a real host.
+  #
+  # This job closes that gap: install asterisk + asterisk-dev + libpjproject-dev
+  # from apt (one version, matching what the runner's apt offers), build our
+  # modules against the *system* asterisk-dev headers (so the ABI matches
+  # the live binary exactly), `make install` into /usr/lib/asterisk/modules,
+  # restart asterisk, and verify every cisco_* module reports Running.
+  #
+  # Deliberately separate from the build matrix because:
+  #   - The matrix builds against three downloaded-from-source asterisk
+  #     versions for ABI-compatibility coverage. Loading any of those
+  #     into the runner's apt asterisk would deliberately mix
+  #     mismatched headers + binary, which is the trap we tell
+  #     operators to avoid (see CLAUDE.md).
+  #   - The matrix is multi-version; the load test only needs one,
+  #     and ubuntu-24.04's apt asterisk is whatever single version
+  #     Canonical shipped that release.
+  #
+  # If this job ever fails: rerun with `ACTIONS_STEP_DEBUG=true` and
+  # inspect the module-show + journalctl steps. The 99% likely cause
+  # is a code path that does work at -Werror compile time but fails
+  # at module load (sorcery type field misuse, missing dependency,
+  # version-script accidentally hiding __mod_info).
+  # ----------------------------------------------------------------
+
+  asterisk-load:
+    name: load modules into a running asterisk
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install asterisk + build deps from apt
+        # Pulls asterisk (the runtime), asterisk-dev (headers used by
+        # our Makefile's default /usr/include path), asterisk-modules
+        # (the rest of the stock module set our cisco_* modules depend
+        # on at load time: res_pjsip, res_pjsip_pubsub, res_pjsip_session,
+        # res_pjsip_xpidf_body_generator [for the slot-grab race],
+        # res_parking [optional for remotecc but loaded by default],
+        # res_pjsip_exten_state, etc), and libpjproject-dev (PJSIP
+        # headers our Makefile finds via pkg-config). The exact
+        # asterisk version is whatever ubuntu-24.04 ships.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            asterisk \
+            asterisk-dev \
+            asterisk-modules \
+            libpjproject-dev \
+            build-essential \
+            pkg-config \
+            libxml2-dev
+
+      - name: build against system asterisk-dev
+        # No PJPROJECT_DIR / PJPROJECT_INCLUDE: the Makefile defaults to
+        # pkg-config libpjproject and /usr/include asterisk headers,
+        # which is what apt just installed. ABI now matches the
+        # /usr/sbin/asterisk binary exactly.
+        run: make
+
+      - name: install modules
+        run: sudo make install
+
+      - name: restart asterisk and wait for boot
+        # `core waitfullybooted` blocks until module loading is done,
+        # so we don't race the verify step against a still-starting
+        # asterisk.  systemctl --no-block lets restart return promptly;
+        # the wait command is the actual barrier.
+        run: |
+          sudo systemctl restart asterisk
+          # Poll for the asterisk control socket to appear (the
+          # rasterisk client we use below needs it). 30s ceiling.
+          for i in $(seq 1 30); do
+            if sudo asterisk -rx 'core show version' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          sudo asterisk -rx 'core waitfullybooted'
+          sudo asterisk -rx 'core show version'
+
+      - name: verify all 10 cisco_* modules report Running
+        # `module show like cisco_` includes a header line ("Module
+        # Description ...") and a trailer ("N modules loaded") on top
+        # of the actual module lines. We grep for "Running" and count.
+        # On success we print the table for the run log; on failure
+        # we additionally dump full module-show output and any
+        # asterisk warnings/errors for diagnosis.
+        run: |
+          set +e
+          output=$(sudo asterisk -rx 'module show like cisco_')
+          echo "$output"
+          running=$(echo "$output" | grep -c 'Running')
+          if [ "$running" -ne 10 ]; then
+            echo "::error::Expected 10 cisco_* modules in Running state, got $running"
+            echo "--- module show (full) ---"
+            sudo asterisk -rx 'module show'
+            echo "--- recent asterisk log ---"
+            sudo journalctl -u asterisk --since '5 minutes ago' | tail -100
+            exit 1
+          fi
+          echo "All 10 cisco_* modules Running."
+
+      - name: check asterisk log for cisco-related errors/warnings
+        # Module-load problems often surface as WARNINGs / ERRORs in
+        # the asterisk log before / after a module flips to "Running":
+        # sorcery type registration failures, helper symbol resolution
+        # misses, body-generator slot conflicts. Fail if we see any
+        # cisco-tagged WARNING or ERROR after startup.
+        #
+        # Known-benign WARNING: stock res_pjsip_xpidf_body_generator
+        # logs "A body generator for application/cpim-pidf+xml is
+        # already registered" when our pidf_body_generator beats it
+        # to the slot. That's the intended outcome (see
+        # res_pjsip_cisco_pidf_body_generator.c's load_pri comment)
+        # — filter it out before counting.
+        run: |
+          set +e
+          log=$(sudo journalctl -u asterisk --since '5 minutes ago' \
+                  --no-pager --output cat)
+          bad=$(echo "$log" \
+                  | grep -E 'ERROR|WARNING' \
+                  | grep -iE 'cisco' \
+                  | grep -v 'body generator for application/cpim-pidf+xml is already')
+          if [ -n "$bad" ]; then
+            echo "::error::Cisco-related ERROR/WARNING in asterisk log:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "No cisco-related ERROR/WARNING in asterisk log."
+
+      - name: stop asterisk
+        # Idempotent cleanup. The CI runner is torn down after the
+        # job anyway, but explicit stop logs any shutdown-time
+        # warnings (which would be a separate diagnostic signal).
+        if: always()
+        run: sudo systemctl stop asterisk || true
