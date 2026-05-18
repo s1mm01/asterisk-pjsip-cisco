@@ -345,18 +345,24 @@ jobs:
         # xpidf body generator we slot-race, res_parking for the
         # remotecc Park path, res_pjsip_exten_state, etc).
         #
-        # asterisk-dev + libpjproject-dev: matching headers for
-        # the rebuild step below. Apt's -dev packages track the
-        # apt binary in lockstep, so building against them produces
-        # .so files whose symbol references match what the daemon
-        # actually exports — including across patch-level renames
-        # like ast_sip_push_task → __ast_sip_push_task that mid-
-        # 20.x picked up but apt's 20.6 doesn't carry.
+        # asterisk-dev: asterisk headers in lockstep with the apt
+        # binary. Building against them produces .so files whose
+        # symbol references match what the daemon actually exports
+        # — including across patch-level renames like
+        # ast_sip_push_task → __ast_sip_push_task that mid-20.x
+        # picked up but apt's 20.6 doesn't carry.
+        #
+        # Note: pjproject has no -dev package on Debian/Ubuntu —
+        # asterisk bundles pjproject statically into res_pjsip.so.
+        # We reuse the pjproject headers fetched earlier in the
+        # workflow; pjproject ABI is stable enough across minor
+        # versions that the latest-pin we resolved is compatible
+        # with whatever apt's asterisk was built against.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           sudo apt-get install -y \
             asterisk asterisk-modules \
-            asterisk-dev libpjproject-dev
+            asterisk-dev
 
       - name: rebuild modules against apt asterisk-dev headers
         # The earlier `make` step compiled against the resolved
@@ -371,11 +377,19 @@ jobs:
         #   upstream 20.13+: __ast_sip_push_task   (renamed; old name
         #                                           became a macro)
         #
-        # Bare `make` (no PJPROJECT_DIR) picks up pkg-config'd
-        # libpjproject and /usr/include/asterisk from asterisk-dev,
-        # so the rebuilt .so references the same symbol names the
-        # apt binary actually exports.
+        # Rebuild without PJPROJECT_DIR so the Makefile picks up
+        # /usr/include/asterisk from asterisk-dev (matching the
+        # apt binary). PJPROJECT_INCLUDE still points at the
+        # fetched pjproject headers (no apt package for those).
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        env:
+          PJPROJECT_INCLUDE: >-
+            -DPJ_AUTOCONF=1
+            -I${{ github.workspace }}/pjproject/pjlib/include
+            -I${{ github.workspace }}/pjproject/pjlib-util/include
+            -I${{ github.workspace }}/pjproject/pjnath/include
+            -I${{ github.workspace }}/pjproject/pjmedia/include
+            -I${{ github.workspace }}/pjproject/pjsip/include
         run: |
           make clean
           make
