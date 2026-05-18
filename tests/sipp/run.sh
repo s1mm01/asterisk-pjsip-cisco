@@ -37,18 +37,20 @@ mkdir -p "$SIPP_TRACE_DIR"
 # -trace_err      capture validation failures inline
 # -trace_screen   per-call summary (pass/fail counters)
 # -timeout 30s    SIPp-internal call-duration cap
-# -bg             batch mode: after the -m calls complete, SIPp exits
-#                 instead of dropping into its interactive UI loop
-#                 ("Press [q] to exit"). Without this, sip-tester 3.7
-#                 hangs forever in non-interactive environments.
-# -nostdin        don't read stdin (defensive belt for runners that
-#                 do attach a TTY to bash subprocesses).
-# < /dev/null     same purpose as -nostdin via the shell side.
+# -nostdin        don't poll stdin for interactive UI keystrokes
+#                 ("Press [q] to exit"); without this, sip-tester 3.7
+#                 sits in the UI loop after -m calls complete.
+# < /dev/null     defensive shell-side belt for the same purpose.
+#
+# Do NOT use -bg: it forks SIPp into the background and exits the
+# foreground process with code 99 to signal "spawned ok". `set -e`
+# in run.sh then aborts. -nostdin is the right flag for batch mode
+# in foreground.
 #
 # Wrapped in `timeout 60s` as an outer safety net: if SIPp deadlocks
-# anyway (kernel buffer wedge, lost packet, broken DNS), the shell
-# kills it and run.sh fails fast instead of timing out the whole CI
-# job at the 6-hour mark.
+# anyway (kernel buffer wedge, lost packet, TCP handshake failure),
+# the shell kills it and run.sh fails fast instead of timing out the
+# whole CI job at the 6-hour mark.
 #
 # Digest credentials are embedded in each scenario's [authentication
 # username=... password=...] macro rather than passed via -au / -ap,
@@ -70,7 +72,6 @@ run_scenario() {
         -m 1 \
         -p "$SIPP_LOCAL_PORT" \
         -t t1 \
-        -bg \
         -nostdin \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.err" \
         -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.screen" \
