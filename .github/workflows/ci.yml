@@ -339,33 +339,56 @@ jobs:
           echo "matrix asterisk branch:     ${{ matrix.asterisk_branch }}"
           echo "major=$APT_VER" >> "$GITHUB_OUTPUT"
 
-      - name: install asterisk runtime from apt
-        # Only when this matrix cell's major == apt's major.
-        # Pulls asterisk (the runtime), asterisk-modules (stock
-        # res_pjsip + dependencies our modules need at load time:
-        # res_pjsip_pubsub, res_pjsip_session, res_pjsip_xpidf_
-        # body_generator for the slot-grab race, res_parking for the
+      - name: install asterisk runtime + headers from apt
+        # asterisk + asterisk-modules: the daemon and its PJSIP
+        # module set (res_pjsip_pubsub, res_pjsip_session, the
+        # xpidf body generator we slot-race, res_parking for the
         # remotecc Park path, res_pjsip_exten_state, etc).
+        #
+        # asterisk-dev + libpjproject-dev: matching headers for
+        # the rebuild step below. Apt's -dev packages track the
+        # apt binary in lockstep, so building against them produces
+        # .so files whose symbol references match what the daemon
+        # actually exports — including across patch-level renames
+        # like ast_sip_push_task → __ast_sip_push_task that mid-
+        # 20.x picked up but apt's 20.6 doesn't carry.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
-          sudo apt-get install -y asterisk asterisk-modules
+          sudo apt-get install -y \
+            asterisk asterisk-modules \
+            asterisk-dev libpjproject-dev
+
+      - name: rebuild modules against apt asterisk-dev headers
+        # The earlier `make` step compiled against the resolved
+        # upstream tag (e.g. 20.13.x). That's our compile-time-
+        # against-latest signal and stays the load-bearing check
+        # for ABI breakage in unreleased asterisk changes. But the
+        # resulting .so files reference symbols as-named in that
+        # tag, which may not match apt's older patch within the
+        # same LTS major:
+        #
+        #   apt 20.6.0:  ast_sip_push_task         (function symbol)
+        #   upstream 20.13+: __ast_sip_push_task   (renamed; old name
+        #                                           became a macro)
+        #
+        # Bare `make` (no PJPROJECT_DIR) picks up pkg-config'd
+        # libpjproject and /usr/include/asterisk from asterisk-dev,
+        # so the rebuilt .so references the same symbol names the
+        # apt binary actually exports.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        run: |
+          make clean
+          make
 
       - name: install our modules into the apt asterisk
-        # The .so files were built by `make` above against the
-        # downloaded asterisk source tree (matrix-specific major).
-        # We install them on top of apt's asterisk of the SAME
-        # major version — minor/patch may differ but LTS ABI is
-        # stable across minors.
-        #
-        # PJPROJECT_DIR is passed again here because the Makefile's
-        # check-headers target (a phony prereq of every target,
-        # install included) re-validates header resolution. We never
-        # installed asterisk-dev / libpjproject-dev on the runner —
-        # the build step pinned headers to the downloaded asterisk
-        # source tree instead, and install needs the same pin or
-        # check-headers fails before any .so is copied.
+        # Bare `sudo make install` — the rebuild step above set up
+        # pkg-config / asterisk-dev resolution. ASTERISK_MODULES_DIR
+        # and ASTERISK_DOC_DIR auto-resolve from
+        # /etc/asterisk/asterisk.conf via the Makefile, so .so files
+        # land at the multiarch path the daemon expects and the doc
+        # XML lands under astdatadir/documentation.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
-        run: sudo make install PJPROJECT_DIR=${{ github.workspace }}/asterisk-src
+        run: sudo make install
 
       - name: restart asterisk and wait for boot
         # `core waitfullybooted` is the hard barrier — without it
