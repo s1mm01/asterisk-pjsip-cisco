@@ -216,12 +216,23 @@ jobs:
         # libxml2-utils (xmllint) are already installed in the build-
         # deps step above.
         #
-        # The unit-test target under tests/unit/ links against
-        # pjproject static libs, which CI deliberately doesn't build
-        # (we only ./configure pjproject for headers, never make).
-        # Skipping unit here keeps CI's pjproject side header-only;
-        # locally `make tests` exercises both halves.
+        # The pjproject-linked half of `make tests`
+        # (tests/unit/test_string_utils) is skipped: CI ./configures
+        # pjproject for headers but never `make`s it, so the static
+        # libs aren't there to link against. The libxml2-only half
+        # runs as its own step below.
         run: bash tests/unit/smoke.sh
+
+      - name: build + run XML body well-formedness test
+        # test_xml_bodies snprintfs each wire-format XML body template
+        # (bulkupdate / MCID / Park toast / Park orbit / HLog) with
+        # bench-realistic substitutions and parses the result with
+        # libxml2. Catches sprintf typos (missing close tag, broken
+        # attribute quote) that would otherwise only surface on the
+        # bench. libxml2-only — no pjproject linkage.
+        run: |
+          make -C tests/unit test_xml_bodies
+          ./tests/unit/test_xml_bodies
 
       - name: package check (Debian)
         env:

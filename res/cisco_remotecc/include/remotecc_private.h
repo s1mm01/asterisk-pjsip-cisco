@@ -57,4 +57,9 @@ int handle_park(struct ast_sip_endpoint *endpoint, const char *endpoint_id,
 int handle_record(struct ast_sip_endpoint *endpoint, const char *endpoint_id,
 	const struct remotecc_dialog_id *dialog_id, int start);
 
+/* Body templates separated into remotecc_bodies.h so the test
+ * harness can include them without dragging in <pjsip.h>. Runtime
+ * callers transitively pick them up via this header. */
+#include "remotecc_bodies.h"
+
 #endif /* CISCO_REMOTECC_H */

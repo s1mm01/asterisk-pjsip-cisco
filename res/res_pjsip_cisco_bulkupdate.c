@@ -99,56 +99,17 @@
 #include "bulkupdate_private.h"
 
 /*
- * Per-part XML format strings. The three parts together get wrapped
- * in a multipart/mixed body by pjsip_multipart_create + add_part. We
- * use pjsip's proper multipart API rather than hand-rolling the
- * boundary/Content-Type lines because pjsip asserts internally that
- * any body with a multipart/<anything> type uses its own internal
- * multipart_print_body callback
- * callback, and a hand-rolled body with a custom print_body trips
- * that assert in pjproject's transport layer.
+ * Per-part XML format strings live in bulkupdate_private.h so the
+ * test suite (tests/unit/test_xml_bodies.c) can pull them in and
+ * validate well-formedness with libxml2. The three parts together
+ * get wrapped into a multipart/mixed body by pjsip_multipart_create
+ * + add_part. We use pjsip's proper multipart API rather than
+ * hand-rolling the boundary/Content-Type lines because pjsip asserts
+ * internally that any body with a multipart/<anything> type uses
+ * its own internal multipart_print_body callback, and a hand-rolled
+ * body with a custom print_body trips that assert in pjproject's
+ * transport layer.
  */
-#define DND_PART_FMT                                                    \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                  \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <dndupdate>\n"                                               \
-	"    <state>%s</state>\n"                                       \
-	"    <option>%s</option>\n"                                     \
-	"  </dndupdate>\n"                                              \
-	"</x-cisco-remotecc-request>\n"
-
-#define HLOG_PART_FMT                                                   \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                  \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <hlogupdate>\n"                                              \
-	"    <status>%s</status>\n"                                     \
-	"  </hlogupdate>\n"                                             \
-	"</x-cisco-remotecc-request>\n"
-
-/* BULK_PART split into header / per-contact / footer so we can emit
- * a <contact line="N"> element for each line button on multi-line
- * Cisco phones. The chan_sip patch's
- * channels/sip/chan_sip.c sip_send_bulkupdate uses the same shape —
- * one <bulkupdate> block wrapping N <contact> elements, one per
- * sip_alias / peer->aliases entry. */
-#define BULK_PART_HEADER                                                \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                  \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <bulkupdate>\n"
-
-#define BULK_CONTACT_FMT                                                \
-	"    <contact line=\"%d\">\n"                                   \
-	"      <mwi>%s</mwi>\n"                                         \
-	"      <emwi><voice-msg new=\"%d\" old=\"%d\" /></emwi>\n"      \
-	"      <cfwdallupdate>\n"                                       \
-	"        <fwdaddress>%s</fwdaddress>\n"                         \
-	"        <tovoicemail>%s</tovoicemail>\n"                       \
-	"      </cfwdallupdate>\n"                                      \
-	"    </contact>\n"
-
-#define BULK_PART_FOOTER                                                \
-	"  </bulkupdate>\n"                                             \
-	"</x-cisco-remotecc-request>\n"
 
 static struct ast_taskprocessor *bulkupdate_serializer;
 static struct ao2_container *bulkupdate_addr_cache;

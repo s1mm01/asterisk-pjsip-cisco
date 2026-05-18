@@ -44,19 +44,19 @@
 #include "remotecc_private.h"
 
 /*
- * MCID status-line update body. Constants here are wire-fidelity to
- * the chan_sip cisco-usecallmanager patch's MCID emitter
- * (channels/sip/sip_remotecc_handler.c sip_remotecc_handle_mcid):
+ * MCID body templates live in remotecc_private.h so the
+ * tests/unit/test_xml_bodies.c regression can validate them.
  *
- *   <statustext>\200T</statustext>     Cisco-private inline-format
- *                                       escape — the phone translates
- *                                       \200T into a localised "trace"
- *                                       glyph on the status line. The
- *                                       byte is not UTF-8, which is
- *                                       why this sub-body intentionally
- *                                       omits encoding="UTF-8" on the
- *                                       XML declaration.
- *   <displaytimeout>7</displaytimeout>  seconds the glyph stays on
+ * MCID_STATUS_PART_FMT carries a Cisco-private inline-format escape
+ * byte:
+ *   <statustext>\200T</statustext>     translates on the phone into a
+ *                                       localised "trace" glyph on the
+ *                                       status line. The byte is not
+ *                                       UTF-8, which is why this
+ *                                       sub-body intentionally omits
+ *                                       encoding="UTF-8" on the XML
+ *                                       declaration. <displaytimeout>
+ *                                       is seconds the glyph stays on
  *                                       screen before the firmware
  *                                       restores the previous text.
  *   <linenumber>0</linenumber>          0 = active line. The firmware
@@ -66,42 +66,11 @@
  *
  * Don't tune these without checking the patch — values are paired
  * with firmware behaviour, not configurable knobs.
+ *
+ * MCID_TONE_PART_FMT: tonetype DtZipZip is Cisco's standard "function
+ * activated" double-zip on the receiver — same value the chan_sip
+ * patch emits for MCID. direction=all plays it both ways.
  */
-#define MCID_STATUS_PART_FMT                                             \
-	"<?xml version=\"1.0\"?>\n"                                    \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <statuslineupdatereq>\n"                                     \
-	"    <action>notify_display</action>\n"                         \
-	"    <dialogid>\n"                                              \
-	"      <callid>%s</callid>\n"                                   \
-	"      <localtag>%s</localtag>\n"                               \
-	"      <remotetag>%s</remotetag>\n"                             \
-	"    </dialogid>\n"                                             \
-	"    <statustext>\200T</statustext>\n"                          \
-	"    <displaytimeout>7</displaytimeout>\n"                      \
-	"    <linenumber>0</linenumber>\n"                              \
-	"    <priority>1</priority>\n"                                  \
-	"  </statuslineupdatereq>\n"                                    \
-	"</x-cisco-remotecc-request>\n"
-
-/*
- * MCID confirmation-tone body. tonetype DtZipZip is Cisco's standard
- * "function activated" double-zip on the receiver — same value the
- * chan_sip patch emits for MCID. direction=all plays it both ways.
- */
-#define MCID_TONE_PART_FMT                                               \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                 \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <playtonereq>\n"                                             \
-	"    <dialogid>\n"                                              \
-	"      <callid>%s</callid>\n"                                   \
-	"      <localtag>%s</localtag>\n"                               \
-	"      <remotetag>%s</remotetag>\n"                             \
-	"    </dialogid>\n"                                             \
-	"    <tonetype>DtZipZip</tonetype>\n"                           \
-	"    <direction>all</direction>\n"                              \
-	"  </playtonereq>\n"                                            \
-	"</x-cisco-remotecc-request>\n"
 
 struct mcid_feedback_task_data {
 	struct ast_sip_endpoint *endpoint;

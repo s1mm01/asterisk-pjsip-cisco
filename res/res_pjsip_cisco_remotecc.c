@@ -79,13 +79,9 @@
 
 #define REMOTECC_MAX_BODY 8192
 
-#define HLOG_UPDATE_FMT                                                  \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                 \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <hlogupdate>\n"                                              \
-	"    <status>%s</status>\n"                                     \
-	"  </hlogupdate>\n"                                             \
-	"</x-cisco-remotecc-request>\n"
+/* HLOG_UPDATE_FMT and the rest of the body templates live in
+ * remotecc_private.h so the tests/unit/test_xml_bodies.c regression
+ * pulls in the same strings and validates well-formedness. */
 
 /*
  * Serializers shared with the per-feature handler files. Non-static

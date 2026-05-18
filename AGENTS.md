@@ -30,7 +30,7 @@ Use existing Asterisk C style: tabs for indentation, braces on control blocks, `
 
 `make tests` runs two flavours from `tests/unit/`:
 - **smoke** — `xmllint` the generated `$(DOC_XML)` plus `readelf`-based symbol checks (`__mod_info`, `load_module`, `unload_module`) for each built `.so` under `$(MODULE_BUILD_DIR)`. Catches the failure modes that surface as "module silently refuses to register at startup".
-- **unit** — standalone pjlib-linked C programs with `assert()`s. Today covers pjlib primitives (`pj_stricmp2`, `pj_strchr`, `pj_str`) we rely on; pattern in `test_string_utils.c` for adding more. The harness ships stubs for `__ast_repl_malloc` / `__ast_free` so it links without libasterisk.
+- **unit** — standalone C programs with `assert()`s. `test_string_utils` (pjlib-linked) pins the pjlib primitives we depend on. `test_xml_bodies` (libxml2-linked) snprintfs every sprintf'd XML body template (`{bulkupdate,remotecc}_bodies.h`) with bench-realistic substitutions and parses the result, catching format-string typos at CI time rather than on the bench. CI runs the libxml2 half on every PR; the pjproject-linked half is local-only.
 
 For behaviour changes that touch live SIP flows, follow `tests/README.md`: parallel PJSIP TCP transport, capture REGISTER/REFER/NOTIFY traffic, verify on a real phone. Document tested Asterisk, pjproject, phone model, and firmware version in PRs.
 

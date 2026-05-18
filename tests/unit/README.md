@@ -34,23 +34,42 @@ look at:
 
 Apt deps: `libxml2-utils` (`xmllint`), `binutils` (`readelf`).
 
-**unit** — standalone C programs linked against pjproject. Each test
-file is its own `main()` with `assert()`s; the Makefile builds and
-runs them.
+**unit** — standalone C programs. Each test file is its own `main()`
+with `assert()`s; the Makefile builds and runs them.
 
-Today this exercises pjlib primitives (`pj_stricmp2`, `pj_strchr`,
-`pj_str`) used by `cisco_media_type_is`, `cisco_copy_sip_uri_hostport`,
-and the conference module's body-building paths. These are pure pjlib
-APIs we depend on; pinning them catches the rare-but-real failure mode
-of pjproject behaviour drifting across versions.
+Currently:
+
+- `test_string_utils` — pjlib primitives (`pj_stricmp2`, `pj_strchr`,
+  `pj_str`) used by `cisco_media_type_is`,
+  `cisco_copy_sip_uri_hostport`, and the conference module's
+  body-building paths. Pure pjlib APIs we depend on; pinning them
+  catches the rare-but-real failure mode of pjproject behaviour
+  drifting across versions. Pjproject-linked.
+
+- `test_xml_bodies` — snprintfs each wire-format XML body template
+  (the `{bulkupdate,remotecc}_bodies.h` macros: DND part, HLog part,
+  bulkupdate body, MCID feedback, Park toast / orbit, HLog update)
+  with bench-realistic substitutions, then parses the result with
+  libxml2. Catches sprintf typos (missing close tag, mismatched
+  attribute quote) that would otherwise only surface on a real Cisco
+  phone. libxml2-linked, no pjproject. Cisco-private `\200` glyph
+  bytes embedded in MCID-status / Park-toast bodies are handled via
+  libxml2's recovery mode (deliberate firmware behaviour, not
+  malformed XML from our side). CI runs this as its own step on every
+  PR — the pjproject-linked half of `make tests` is local-only
+  because CI doesn't build pjproject static libs.
 
 ## Adding a unit test
 
-The harness pattern is in `test_string_utils.c`:
+For pjlib-linked tests, the harness pattern is in `test_string_utils.c`:
 
 1. Copy it to `test_<name>.c`.
 2. Append `<name>` to `UNIT_BINS` in `Makefile`.
 3. Write `main()` with `assert()`s.
+
+For libxml2-linked tests, copy `test_xml_bodies.c` instead — it has
+its own Makefile rule that uses pkg-config'd `libxml-2.0` rather than
+the pjproject link path.
 
 ## What's intentionally NOT covered
 

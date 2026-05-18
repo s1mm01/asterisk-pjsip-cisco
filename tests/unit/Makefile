@@ -73,7 +73,7 @@ PJPROJECT_LIBS := \
 endif
 endif
 
-UNIT_BINS := test_string_utils
+UNIT_BINS := test_string_utils test_xml_bodies
 
 # Asterisk's bundled pjproject patches malloc/free to route through
 # __ast_repl_malloc / __ast_free. Stubs link those symbols into the
@@ -81,6 +81,17 @@ UNIT_BINS := test_string_utils
 # pjlib/guid_uuid.c.
 STUB_OBJS  := asterisk_stubs.o
 EXTRA_LIBS := -luuid -lpthread -lm
+
+# test_xml_bodies links against libxml2 only (no pjproject), and
+# needs to include the body-template headers that live alongside
+# each module's other private declarations. Headers are no-deps —
+# just C string-literal macros — so adding the -I paths costs
+# nothing for the other test binaries that ignore them.
+XML_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null)
+XML_LIBS   := $(shell pkg-config --libs   libxml-2.0 2>/dev/null)
+BODY_INCLUDES := \
+    -I$(REPO_ROOT)/res/cisco_bulkupdate/include \
+    -I$(REPO_ROOT)/res/cisco_remotecc/include
 
 .PHONY: all smoke unit clean
 
@@ -115,6 +126,11 @@ unit: $(UNIT_BINS)
 
 asterisk_stubs.o: asterisk_stubs.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# test_xml_bodies is libxml2-linked (no pjproject), unlike the rest.
+# Explicit rule overrides the pattern rule below.
+test_xml_bodies: test_xml_bodies.c
+	$(CC) $(CFLAGS) $(BODY_INCLUDES) $(XML_CFLAGS) -o $@ $< $(XML_LIBS)
 
 %: %.c $(STUB_OBJS)
 	$(CC) $(CFLAGS) $(PJPROJECT_CFLAGS) -o $@ $< $(STUB_OBJS) \

@@ -57,4 +57,9 @@ void cisco_bulkupdate_cli_shutdown(void);
 int cisco_bulkupdate_funcs_init(void);
 void cisco_bulkupdate_funcs_shutdown(void);
 
+/* Body templates separated into bulkupdate_bodies.h so the test
+ * harness can include them without dragging in asterisk/res_pjsip.h.
+ * Runtime callers transitively pick them up via this header. */
+#include "bulkupdate_bodies.h"
+
 #endif /* CISCO_BULKUPDATE_H */

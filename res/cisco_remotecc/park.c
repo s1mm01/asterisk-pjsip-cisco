@@ -62,66 +62,33 @@
 #include "remotecc_private.h"
 
 /*
- * Park status-line toast. Sent to the phone that pressed Park once the
- * call has landed in a slot. The <statustext> is a Cisco-private
- * inline-format string: "\200! N" renders as a parked-call glyph plus
- * the slot number; "\200^" is the generic "operation cleared" glyph
- * used when parking failed/ended without a slot. The \200 (0x80) byte
- * is not UTF-8 — same as the MCID status part, so this body omits
- * encoding="UTF-8" on the XML declaration (the chan_sip patch uses
- * encoding="iso-8859-1" here; either way the byte is what matters and
- * the firmware parses by element). <dialogid> echoes back exactly what
- * the phone sent in the Park REFER so it lands on the right call
- * appearance. notify_display / displaytimeout / linenumber / priority
- * are wire-fidelity to the patch's statuslineupdatereq emitter — not
+ * Park body templates live in remotecc_private.h so the
+ * tests/unit/test_xml_bodies.c regression can validate them.
+ *
+ * PARK_TOAST_FMT statustext is a Cisco-private inline-format string:
+ * "\200! N" renders as a parked-call glyph plus the slot number;
+ * "\200^" is the "operation cleared" glyph used when parking
+ * failed/ended without a slot. The \200 (0x80) byte is not UTF-8 —
+ * same as the MCID status part, so this body omits encoding="UTF-8"
+ * on the XML declaration (the chan_sip patch uses encoding="iso-8859-1"
+ * here; either way the byte is what matters and the firmware parses
+ * by element). <dialogid> echoes back exactly what the phone sent in
+ * the Park REFER so it lands on the right call appearance.
+ * notify_display / displaytimeout / linenumber / priority are
+ * wire-fidelity to the patch's statuslineupdatereq emitter — not
  * tunables. Mirrors channels/sip/chan_sip.c remotecc_park_notify().
- */
-#define PARK_TOAST_FMT                                                   \
-	"<?xml version=\"1.0\"?>\n"                                     \
-	"<x-cisco-remotecc-request>\n"                                  \
-	"  <statuslineupdatereq>\n"                                     \
-	"    <action>notify_display</action>\n"                         \
-	"    <dialogid>\n"                                              \
-	"      <callid>%s</callid>\n"                                   \
-	"      <localtag>%s</localtag>\n"                               \
-	"      <remotetag>%s</remotetag>\n"                             \
-	"    </dialogid>\n"                                             \
-	"    <statustext>%s</statustext>\n"                             \
-	"    <displaytimeout>10</displaytimeout>\n"                     \
-	"    <linenumber>0</linenumber>\n"                              \
-	"    <priority>1</priority>\n"                                  \
-	"  </statuslineupdatereq>\n"                                    \
-	"</x-cisco-remotecc-request>\n"
-
-/* statustext payloads for PARK_TOAST_FMT. "%d" gets the slot number. */
-#define PARK_TOAST_PARKED  "\200! %d"
-#define PARK_TOAST_CLEARED "\200^"
-
-/*
- * Park-orbit BLF body (ParkMonitor). An Event: refer NOTIFY carrying
- * this application/dialog-info+xml tells the parking phone the state of
- * the slot it parked a call into, so a "Park slot N" line button
+ *
+ * PARK_ORBIT_FMT (ParkMonitor) is an Event: refer NOTIFY carrying
+ * application/dialog-info+xml that tells the parking phone the state
+ * of the slot it parked a call into, so a "Park slot N" line button
  * lights/clears. <call:park><event> is parked|retrieved|forwarded|
- * abandoned|error; <state> is confirmed while occupied,
- * terminated once the call leaves the lot; version increments per
- * NOTIFY. The "parmams" namespace typo is Cisco's, in the firmware —
- * keep it verbatim. Args: version, slot, domain, slot, state, event,
- * slot, domain, slot, domain. Mirrors channels/sip/chan_sip.c
+ * abandoned|error; <state> is confirmed while occupied, terminated
+ * once the call leaves the lot; version increments per NOTIFY. The
+ * "parmams" namespace typo is Cisco's, in the firmware — keep it
+ * verbatim. Args: version, slot, domain, slot, state, event, slot,
+ * domain, slot, domain. Mirrors channels/sip/chan_sip.c
  * remotecc_park_notify()'s monitor branch.
  */
-#define PARK_ORBIT_FMT                                                    \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"                   \
-	"<dialog-info xmlns=\"urn:ietf:parmams:xml:ns:dialog-info\""     \
-	" xmlns:call=\"urn:x-cisco:parmams:xml:ns:dialog-info:dialog:callinfo-dialog\"" \
-	" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""       \
-	" version=\"%u\" state=\"full\" entity=\"%d@%s\">\n"            \
-	"  <dialog id=\"%d\">\n"                                         \
-	"    <state>%s</state>\n"                                        \
-	"    <call:park><event>%s</event></call:park>\n"                \
-	"    <local><identity display=\"\">sip:%d@%s</identity></local>\n"   \
-	"    <remote><identity display=\"\">sip:%d@%s</identity></remote>\n" \
-	"  </dialog>\n"                                                  \
-	"</dialog-info>\n"
 
 struct park_request_data {
 	struct ast_sip_endpoint *endpoint;       /* ref'd */
