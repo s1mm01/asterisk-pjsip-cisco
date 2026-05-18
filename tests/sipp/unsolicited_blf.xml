@@ -103,16 +103,13 @@
     <action>
       <ereg regexp="Event: *presence"
             search_in="msg"
-            check_it="true"
-            assign_to="evt_hdr_1"/>
+            check_it="true"/>
       <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"
             search_in="msg"
-            check_it="true"
-            assign_to="cisco_ns_1"/>
+            check_it="true"/>
       <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;"
             search_in="msg"
-            check_it="true"
-            assign_to="watched_target_1"/>
+            check_it="true"/>
     </action>
   </recv>
 
@@ -138,16 +135,13 @@
     <action>
       <ereg regexp="Event: *presence"
             search_in="msg"
-            check_it="true"
-            assign_to="evt_hdr_2"/>
+            check_it="true"/>
       <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"
             search_in="msg"
-            check_it="true"
-            assign_to="cisco_ns_2"/>
+            check_it="true"/>
       <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;"
             search_in="msg"
-            check_it="true"
-            assign_to="watched_target_2"/>
+            check_it="true"/>
     </action>
   </recv>
 

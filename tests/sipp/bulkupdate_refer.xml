@@ -98,28 +98,22 @@
     <action>
       <ereg regexp="Refer-To"
             search_in="msg"
-            check_it="true"
-            assign_to="refer_to_hdr"/>
+            check_it="true"/>
       <ereg regexp="x-cisco-remotecc-request"
             search_in="msg"
-            check_it="true"
-            assign_to="cisco_refer_wrapper"/>
+            check_it="true"/>
       <ereg regexp="&lt;bulkupdate"
             search_in="msg"
-            check_it="true"
-            assign_to="bulkupdate_root"/>
+            check_it="true"/>
       <ereg regexp="line=&quot;1&quot;"
             search_in="msg"
-            check_it="true"
-            assign_to="line_1"/>
+            check_it="true"/>
       <ereg regexp="line=&quot;2&quot;"
             search_in="msg"
-            check_it="true"
-            assign_to="line_2"/>
+            check_it="true"/>
       <ereg regexp="line=&quot;3&quot;"
             search_in="msg"
-            check_it="true"
-            assign_to="line_3"/>
+            check_it="true"/>
     </action>
   </recv>
 

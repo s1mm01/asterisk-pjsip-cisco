@@ -104,12 +104,10 @@
     <action>
       <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"
             search_in="msg"
-            check_it="true"
-            assign_to="cisco_ns"/>
+            check_it="true"/>
       <ereg regexp="&lt;presence"
             search_in="msg"
-            check_it="true"
-            assign_to="presence_root"/>
+            check_it="true"/>
     </action>
   </recv>
 

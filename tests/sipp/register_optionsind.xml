@@ -103,12 +103,10 @@
     <action>
       <ereg regexp="x-cisco-remotecc-response"
             search_in="msg"
-            check_it="true"
-            assign_to="optionsind_outer"/>
+            check_it="true"/>
       <ereg regexp="&lt;optionsind&gt;"
             search_in="msg"
-            check_it="true"
-            assign_to="optionsind_inner"/>
+            check_it="true"/>
     </action>
   </recv>
 
