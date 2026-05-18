@@ -1,13 +1,21 @@
 ; ----------------------------------------------------------------
-; Cisco feature-code dialplan for asterisk-pjsip-cisco
+; Cisco feature dialplan for asterisk-pjsip-cisco
 ; ----------------------------------------------------------------
 ;
-; This file exists solely to wire res_parking into the dialplan
-; context Cisco endpoints route through. The other Cisco features
-; this project ships — Confrn / ConfList / Join / Select / Unselect
-; / RmLastConf / Mute / Remove / Update / HLog / MCID / DND /
-; CFwdALL / HuntGroup / Record / Park — are all native softkeys
-; handled by the cisco_* modules; no dialplan is required for them.
+; Most Cisco feature behaviour (Confrn / ConfList / Join / Select /
+; Unselect / RmLastConf / Mute / Remove / Update / HLog / MCID / DND
+; / CFwdALL / HuntGroup / Record / Park) is driven by native
+; softkeys handled by the cisco_* modules; no dialplan is required
+; for the softkeys themselves to work.
+;
+; This sample covers two things:
+;
+;   1) PARK — required wiring of res_parking into the cisco-features
+;      context so the RemoteCC Park softkey lands in a real lot.
+;
+;   2) CISCO_* dialplan-function recipes — optional, only when you
+;      want to make dialplan-side routing decisions based on the
+;      DND / HuntGroup / CFwdAll state the softkeys manage.
 ;
 ; To use: paste this file into /etc/asterisk/extensions.conf (or
 ; #include it), then either set
@@ -50,3 +58,138 @@
 [cisco-features]
 
 include => parkedcalls
+
+
+; ----------------------------------------------------------------
+; CISCO_* dialplan-function recipes (OPTIONAL)
+; ----------------------------------------------------------------
+; The cisco_bulkupdate module exposes three dialplan functions:
+;
+;   CISCO_DND(<endpoint>)           — read returns "YES" / "";
+;                                     write toggles DND state + refreshes
+;                                     the phone's DND lamp via REFER.
+;   CISCO_HUNTGROUP(<endpoint>)     — read returns "YES" / "";
+;                                     write toggles in/out-of-group state +
+;                                     refreshes the phone's HLog softkey.
+;   CISCO_CALLFORWARD(<endpoint>)   — read returns the forward target
+;                                     (empty when CFwd is off); write sets
+;                                     the target + refreshes the phone's
+;                                     CFwdAll lamp.
+;
+; Setting these from dialplan updates the state on the phone UI.
+; They do NOT install server-side routing. If you want incoming
+; calls to a DND'd or CFwd'd extension to be routed differently in
+; dialplan, you have to wire that yourself — the recipes below show
+; the standard patterns.
+;
+; Server-side capture of phone-side softkey input is asymmetric:
+;
+;   DND softkey       — captured server-side; the PUBLISH the phone
+;                       sends is handled by res_pjsip_cisco_feature_events,
+;                       which calls cisco_dnd_set() for you. No
+;                       dialplan needed for DND to persist.
+;   HLog softkey      — captured server-side; the REFER the phone
+;                       sends is handled by res_pjsip_cisco_remotecc,
+;                       which calls cisco_huntgroup_set() for you. No
+;                       dialplan needed for HuntGroup to persist.
+;   CFwdAll softkey   — NOT captured server-side. The phone INVITEs
+;                       a service-URI when the user enters / cancels
+;                       the forward target, and dialplan has to catch
+;                       that INVITE and write CISCO_CALLFORWARD itself
+;                       (Recipe 1). Without this wiring, pressing
+;                       CFwdAll on the phone does nothing visible to
+;                       Asterisk.
+;
+; ----------------------------------------------------------------
+; Recipe 1 — Capture CFwdAll softkey input  (REQUIRED for CFwd save)
+; ----------------------------------------------------------------
+; When the user enters a forward target via the CFwdAll softkey,
+; the phone INVITEs `x--serviceuri-cfwdall-<target>@<context>`.
+; When they cancel, it INVITEs `x--serviceuri-cfwdall-@<context>`
+; (empty target). Catch both patterns and Set CISCO_CALLFORWARD
+; for the calling endpoint:
+;
+;   exten => _x--serviceuri-cfwdall-X.,1,Answer()
+;    same => n,Set(CISCO_CALLFORWARD(${CHANNEL(endpoint)})=${EXTEN:22})
+;    same => n,Hangup()
+;
+;   exten => x--serviceuri-cfwdall-,1,Answer()
+;    same => n,Set(CISCO_CALLFORWARD(${CHANNEL(endpoint)})=)
+;    same => n,Hangup()
+;
+; - ${CHANNEL(endpoint)} is the calling Cisco endpoint's name, so
+;   this recipe works for every phone without per-line duplication.
+; - ${EXTEN:22} strips the 22-char "x--serviceuri-cfwdall-" prefix
+;   to leave just the dialed target.
+; - Answer() before Set() so the phone considers the action
+;   accepted; without it the softkey UI shows the change as
+;   pending or fails. The bulkupdate REFER fires from the Set()
+;   itself, so the CFwdAll banner on the phone updates the moment
+;   the dialplan completes.
+;
+; To verify the exact pattern your firmware sends, run
+; `pjsip set logger on`, press CFwdAll on a phone, and observe the
+; INVITE Request-URI. The patterns above match Enterprise SIP 9.x
+; through 14.x on the 7975 / 8845 / 8861 / 8865 — older firmwares
+; may differ.
+;
+; ----------------------------------------------------------------
+; Recipe 2 — DND-aware Dial
+; ----------------------------------------------------------------
+; Skip the Dial leg entirely (no ring, no missed-call notification
+; on the phone screen) when the target endpoint is on DND. Cheaper
+; than letting the phone ring and 486-Busy the INVITE, and lets you
+; deliver a different greeting / route to a coverage queue.
+;
+;   exten => _6XXX,1,GotoIf($["${CISCO_DND(${EXTEN})}" = "YES"]?on-dnd)
+;    same => n,Dial(PJSIP/${EXTEN},30)
+;    same => n,Voicemail(${EXTEN}@default,u)
+;    same => n,Hangup()
+;    same => n(on-dnd),Voicemail(${EXTEN}@default,b)
+;    same => n,Hangup()
+;
+; Use ,b on the DND branch so the caller hears the "busy" greeting
+; rather than the "unavailable" one; signals to the caller that the
+; user is reachable but not taking calls right now.
+;
+; ----------------------------------------------------------------
+; Recipe 3 — CFwdAll-honoring Dial  (REQUIRED for CFwd to redirect)
+; ----------------------------------------------------------------
+; Setting CFwdAll on the phone (softkey or CISCO_CALLFORWARD write)
+; updates the phone's UI but does NOT add a server-side 302 redirect.
+; If you want calls to actually be forwarded to the CFwd target,
+; read CISCO_CALLFORWARD in the routing dialplan and Dial that
+; target instead of the user.
+;
+;   exten => _6XXX,1,Set(CFWD=${CISCO_CALLFORWARD(${EXTEN})})
+;    same => n,GotoIf($["${CFWD}" = ""]?ring)
+;    same => n,NoOp(Forwarding ${EXTEN} -> ${CFWD})
+;    same => n,Dial(Local/${CFWD}@from-internal,30)
+;    same => n,Hangup()
+;    same => n(ring),Dial(PJSIP/${EXTEN},30)
+;    same => n,Voicemail(${EXTEN}@default,u)
+;    same => n,Hangup()
+;
+; ----------------------------------------------------------------
+; Recipe 4 — Hunt-group bulk toggle (close-of-business)
+; ----------------------------------------------------------------
+; Log everyone out of a hunt group at scheduled times. Function
+; writes require a channel, so an external script originates a
+; Local channel into an admin extension that runs the toggles
+; in-dialplan. The bulkupdate REFER fires per Set() so each phone's
+; HLog softkey state updates in lockstep.
+;
+;   exten => eob-logout,1,Set(CISCO_HUNTGROUP(6001)=no)
+;    same => n,Set(CISCO_HUNTGROUP(6003)=no)
+;    same => n,Set(CISCO_HUNTGROUP(6006)=no)
+;    same => n,Set(CISCO_HUNTGROUP(6007)=no)
+;    same => n,Hangup()
+;
+; Cron triggers it via Originate:
+;
+;   # /etc/cron.d/cisco-eob
+;   0 18 * * 1-5 root /usr/sbin/asterisk -rx \
+;       "channel originate Local/eob-logout@cisco-features application Hangup"
+;
+; Pair with CISCO_HUNTGROUP reads in your queue / hunt routing if
+; you don't already rely on Asterisk's own queue agent state.
