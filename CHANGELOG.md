@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.5.0 — 2026-05-18
+
+Diagnostics + tree refactor release. New `pjsip cisco status
+<endpoint>` CLI surfaces the runtime picture for a Cisco endpoint
+in one place — sorcery config, registration state, MWI counts, the
+REGISTER Call-ID, the harvested MAC, and the device's self-reported
+firmware versions. Plus a tree reorganisation to Asterisk's house
+style: per-module subdirectories under `res/`, public headers under
+`include/cisco/`, build outputs under `obj/`. No ABI or sorcery-
+schema change — v0.5.0 installs as a drop-in replacement for v0.4.2.
+
+### New behaviour
+
+- **`pjsip cisco status <endpoint>` CLI**
+  (`res_pjsip_cisco_service_control`). One-shot dump of everything
+  the module set knows about a Cisco endpoint:
+  - `type=cisco` sorcery fields (model, blf entries, …).
+  - AOR / contact state + REGISTER expiry.
+  - MWI new/old counts, delegated to the same compute path the
+    unsolicited-NOTIFY flow uses (`cisco_endpoint_mwi_count`,
+    lifted into the shared endpoint helpers).
+  - REGISTER Call-ID, harvested by
+    `res_pjsip_cisco_register_optionsind` at REGISTER time.
+  - Device MAC address + firmware active / inactive load, parsed
+    from the REGISTER `Reason:` header.
+  - Aliases (multi-line phones REGISTERing the same MAC under
+    several endpoint names).
+
+- **REGISTER Reason-header firmware / device harvest**
+  (`res_pjsip_cisco_feature_events`). Cisco firmware tags REGISTER
+  with a `Reason:` header carrying
+  `DeviceName=...; ActiveLoadId=...; InactiveLoadId=...`. Parsed
+  and stored on the `cisco_mac_info` entry alongside the existing
+  MAC-from-From-URI extraction. Surfaced via the status CLI today;
+  opens the door to fleet-firmware reporting later.
+
+- **Alias-aware MAC lookup, with expired-entry skip**
+  (`res/cisco_endpoint/device.c`). Multi-line phones REGISTER once
+  per line, so the MAC→endpoint map sees several entries per
+  device. Status lookup now walks aliases when the queried name
+  is the alias rather than the primary, and skips entries whose
+  REGISTER has expired.
+
+### Internals
+
+- **Tree refactor to Asterisk house style.**
+  `res/res_pjsip_cisco_<feature>.c` keeps the `AST_MODULE_INFO`
+  entry point only; everything else moves to a sibling
+  subdirectory (`res/cisco_<feature>/*.c`) with private headers
+  under `res/cisco_<feature>/include/`. Public / shared headers
+  live under `include/cisco/`. Build outputs (modules + generated
+  doc XML) live under `obj/`. Output paths are parameterised via
+  the `OBJ_DIR`, `MODULE_BUILD_DIR`, and `DOC_XML` make variables
+  (documented in the top-level Makefile).
+
+- **`res_pjsip_cisco_remotecc` logging split**. Unsolicited-alarm
+  processing and remotecc-response processing previously shared a
+  log path; split so a noisy alarm phone doesn't drown out
+  response-flow diagnostics.
+
+### Tests + CI
+
+- **`test_xml_bodies` unit test** (libxml2-linked, runs under
+  `make tests`). Snprintfs each wire-format XML body template
+  (DND part, HLog part, bulkupdate body, MCID feedback, Park
+  toast / orbit, HLog update) with bench-realistic substitutions,
+  then parses the result with libxml2. Catches sprintf typos
+  (missing close tag, mismatched attribute quote) before they
+  hit a real Cisco phone. Cisco-private `\200` glyph bytes
+  embedded in MCID-status / Park-toast bodies are handled via
+  libxml2's recovery mode.
+
+- **CI module-load smoke**. The matrix runner installs apt's
+  stock Asterisk, builds the modules against it, then loads all
+  ten `.so` files into the running daemon and checks
+  `module show like cisco_`. Gated on the apt major matching
+  the build matrix cell — jammy / asterisk-20 for cell 20, noble /
+  asterisk-22 for cell 22. Cell 23 skips load because Ubuntu has
+  no asterisk-23 package yet.
+
 ## v0.4.2 — 2026-05-16
 
 Bug fix follow-up to v0.4.0's phantom-video-suppression work.

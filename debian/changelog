@@ -1,3 +1,29 @@
+asterisk-pjsip-cisco (0.5.0-1) unstable; urgency=medium
+
+  * New `pjsip cisco status <endpoint>` CLI: one-shot dump of
+    sorcery config, registration state, MWI counts, REGISTER
+    Call-ID, harvested MAC, and the device's self-reported
+    firmware active / inactive load. Multi-line aliases handled
+    via the lifted cisco_mac_* shared API.
+  * REGISTER Reason-header parsing: DeviceName / ActiveLoadId /
+    InactiveLoadId stored on the MAC-keyed device map and
+    surfaced via the status CLI.
+  * res_pjsip_cisco_remotecc: split unsolicited-alarm and
+    remotecc-response log paths so a noisy alarm phone doesn't
+    drown out response-flow diagnostics.
+  * Tree refactor to Asterisk house style: per-module
+    subdirectories under res/, public headers under
+    include/cisco/, build outputs under obj/. Output paths
+    parameterised via OBJ_DIR / MODULE_BUILD_DIR / DOC_XML.
+    No ABI or sorcery-schema change — installs as a drop-in
+    replacement for v0.4.2.
+  * tests/unit: libxml2-linked test_xml_bodies parses every
+    sprintf'd wire-format body template; CI gains a module-load
+    smoke step that loads all ten .so files against apt's
+    Asterisk when the major version matches the build matrix.
+
+ -- Andrew Simmonds <simmo@rinseout.org>  Mon, 18 May 2026 12:00:00 +0800
+
 asterisk-pjsip-cisco (0.4.2-1) unstable; urgency=medium
 
   * Phantom video suppression now also fires when the call
