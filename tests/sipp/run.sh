@@ -88,12 +88,105 @@ run_scenario() {
 # semantics or short body buffers (Cisco bulkupdate REFER bodies
 # routinely exceed 1.5 KB), CI surfaces it here instead of bench.
 
-# Sorted iteration so register_optionsind runs first (subscribe_presence
-# happens to follow alphabetically; if a future scenario needs an
-# explicit ordering, rename to add a numeric prefix).
+# Paired UAC+UAS runner for out-of-dialog inbound scenarios.
+#
+# When asterisk pushes an out-of-dialog request to the registered
+# Contact (bulkupdate REFER, unsolicited NOTIFY), it carries a NEW
+# Call-ID. SIPp 3.7 maps inbound by Call-ID and discards anything
+# that doesn't match an active call — so a UAC-only scenario can't
+# observe these.
+#
+# Workaround: split into two SIPp processes.
+#   * UAS scenario binds the Contact URI's port (15060), starts in
+#     receive mode. SIPp accepts new inbound dialogs by default in
+#     UAS mode.
+#   * UAC scenario uses a different local port (15061) for the
+#     REGISTER exchange. The UAC's Contact header points at the
+#     UAS port, so asterisk dispatches subsequent traffic there.
+#   * Drop reg-id from the UAC's Contact to avoid RFC 5626 outbound
+#     flow reuse — without it, asterisk does classic Contact-URI
+#     dispatch and the inbound request lands on the UAS socket.
+#
+# Both scenarios run -m 1, so each handles exactly one inbound /
+# outbound and exits.
+run_paired() {
+    local uac="$1"
+    local uas="$2"
+    local name
+    name=$(basename "$uac" .uac.xml)
+
+    echo
+    echo "=== SIPp paired scenario: $name ==="
+    echo "  asterisk:   $ASTERISK_HOST:$ASTERISK_PORT"
+    echo "  sipp UAS:   0.0.0.0:$SIPP_LOCAL_PORT"
+    echo "  sipp UAC:   0.0.0.0:$((SIPP_LOCAL_PORT + 1))"
+    echo
+
+    # Start UAS in background — needs to be bound and listening
+    # before the UAC's REGISTER triggers asterisk's deferred task.
+    timeout 60s sipp \
+        -sf "$uas" \
+        -m 1 \
+        -p "$SIPP_LOCAL_PORT" \
+        -t t1 \
+        -nostdin \
+        -trace_err -error_file "$SIPP_TRACE_DIR/$name.uas.err" \
+        -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.uas.screen" \
+        -timeout 30s \
+        "$ASTERISK_HOST:$ASTERISK_PORT" \
+        < /dev/null &
+    local uas_pid=$!
+
+    # Brief delay so the UAS bind completes before we trigger
+    # asterisk to push.
+    sleep 1
+
+    # UAC on a different port; sends REGISTER and waits for asterisk
+    # to dispatch the out-of-dialog request to the UAS.
+    timeout 60s sipp \
+        -sf "$uac" \
+        -m 1 \
+        -p $((SIPP_LOCAL_PORT + 1)) \
+        -t t1 \
+        -nostdin \
+        -trace_err -error_file "$SIPP_TRACE_DIR/$name.uac.err" \
+        -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.uac.screen" \
+        -timeout 30s \
+        "$ASTERISK_HOST:$ASTERISK_PORT" \
+        < /dev/null
+    local uac_rc=$?
+
+    # UAS should have completed its single inbound by now.
+    wait $uas_pid
+    local uas_rc=$?
+
+    if [ $uac_rc -ne 0 ] || [ $uas_rc -ne 0 ]; then
+        echo "::error::paired scenario $name failed (UAC=$uac_rc, UAS=$uas_rc)"
+        return 1
+    fi
+}
+
+# Iterate scenarios. *.uac.xml files have a matching *.uas.xml and
+# run as paired tests; *.uas.xml files are picked up via that pairing
+# (skip them here). Everything else runs as a single SIPp UAC scenario.
 for scenario in "$SCRIPT_DIR"/*.xml; do
     [ -f "$scenario" ] || continue
-    run_scenario "$scenario"
+    case "$scenario" in
+        *.uas.xml)
+            continue
+            ;;
+        *.uac.xml)
+            uas="${scenario%.uac.xml}.uas.xml"
+            if [ ! -f "$uas" ]; then
+                echo "::error::$scenario has no matching ${uas##*/}"
+                exit 1
+            fi
+            run_paired "$scenario" "$uas"
+            ;;
+        *)
+            run_scenario "$scenario"
+            ;;
+    esac
 done
 
 echo

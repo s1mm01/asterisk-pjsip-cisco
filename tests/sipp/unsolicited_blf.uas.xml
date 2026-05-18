@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Unsolicited BLF NOTIFYs — UAS half.
+
+  Listens on TCP port 15060 (the Contact URI port the paired UAC
+  registered). asterisk's post-REGISTER deferred task pushes one
+  Event: presence NOTIFY per entry in 1010's subscribe= list —
+  1030 and 1050 in tests/ci/pjsip.conf, so we expect exactly two.
+
+  Assertions per NOTIFY:
+    * Event: presence header — no SUBSCRIBE preceded this, so
+      it's the unsolicited-push path.
+    * Cisco RPID namespace in body.
+    * Tuple id matches one of the watched extensions (guards
+      against subscription leaks).
+
+  Order across the subscribe= list isn't guaranteed (deferred-task
+  scheduling), but each NOTIFY individually has to be Cisco-shaped
+  and targeted at one of the two watched extensions.
+-->
+<scenario name="cisco_unsolicited_blf_uas">
+
+  <recv request="NOTIFY" crlf="true">
+    <action>
+      <ereg regexp="Event: *presence"                 search_in="msg" check_it="true" assign_to="evt_hdr_1"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid" search_in="msg" check_it="true" assign_to="cisco_ns_1"/>
+      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;" search_in="msg" check_it="true" assign_to="target_1"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      X-Test-Asserts: [$evt_hdr_1] [$cisco_ns_1] [$target_1]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="NOTIFY" crlf="true">
+    <action>
+      <ereg regexp="Event: *presence"                 search_in="msg" check_it="true" assign_to="evt_hdr_2"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid" search_in="msg" check_it="true" assign_to="cisco_ns_2"/>
+      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;" search_in="msg" check_it="true" assign_to="target_2"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      X-Test-Asserts: [$evt_hdr_2] [$cisco_ns_2] [$target_2]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
+  <CallLengthRepartition value="10, 50, 100, 500, 1000"/>
+
+</scenario>

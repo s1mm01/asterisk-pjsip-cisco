@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Bulkupdate REFER — UAC half.
+
+  Sends the REGISTER + auth round-trip as endpoint 1031, then
+  pauses. The assertion on asterisk's inbound bulkupdate REFER
+  lives in the UAS half (bulkupdate_refer.uas.xml) which listens
+  on the Contact URI port. See run.sh's paired-scenario handling.
+
+  Why split UAC + UAS:
+    The post-REGISTER bulkupdate REFER is an out-of-dialog
+    request from asterisk (its own Call-ID, RFC 3515). SIPp 3.7
+    maps inbound by Call-ID and discards anything that doesn't
+    match an active call — so a single UAC scenario can't capture
+    the REFER. The UAS half binds the Contact URI's port and
+    starts in receive mode, which makes SIPp accept the new
+    dialog cleanly.
+
+  Why no reg-id:
+    With reg-id + +sip.instance, asterisk implements RFC 5626
+    outbound flow reuse and might dispatch the REFER back over
+    the UAC's TCP socket rather than opening a fresh connection
+    to the Contact URI. Dropping reg-id forces classic Contact-
+    URI dispatch, sending the REFER to the UAS listener.
+
+  Endpoint 1031 is chosen because:
+    * aliases = 1030,1032 — the bulkupdate body should carry
+      <contact line="N"> for all three lines, exercising the
+      multi-line consolidation path.
+    * no subscribe= list — no unsolicited NOTIFYs to complicate
+      the UAS recv ordering.
+-->
+<scenario name="cisco_bulkupdate_refer_uac">
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1031@[remote_ip]>;tag=[call_number]
+      To: <sip:1031@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Contact: <sip:1031@127.0.0.1:15060;transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>"
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="401" auth="true">
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1031@[remote_ip]>;tag=[call_number]
+      To: <sip:1031@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Contact: <sip:1031@127.0.0.1:15060;transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-bbccddeeff31>"
+      [authentication username=1031 password=ci-no-secret]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200">
+  </recv>
+
+  <!-- Pause long enough for asterisk's deferred bulkupdate-REFER
+       task to fire and reach the UAS listener at the Contact
+       URI's port. Bench observation: bulkupdate REFER dispatches
+       within ~50ms post-REGISTER; 3 seconds is a generous margin. -->
+  <pause milliseconds="3000"/>
+
+  <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
+  <CallLengthRepartition value="10, 50, 100, 500, 1000"/>
+
+</scenario>

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Bulkupdate REFER — UAS half.
+
+  Listens on TCP port 15060 (the Contact URI port the paired UAC
+  registered). asterisk's post-REGISTER deferred task dispatches
+  a bulkupdate REFER to that Contact; this scenario asserts on
+  the inbound REFER's body shape and ACKs with 200 OK.
+
+  Starts with <recv> rather than <send>, putting SIPp into UAS
+  mode — new inbound dialogs are accepted by default in that mode,
+  which is what we need for the new-Call-ID REFER asterisk sends
+  (RFC 3515 — REFER establishes its own dialog).
+
+  Assertions cover the multi-line consolidation shape — three
+  <contact line="N"> entries for endpoint 1031's aliases (1030 /
+  1031 / 1032).
+-->
+<scenario name="cisco_bulkupdate_refer_uas">
+
+  <recv request="REFER" crlf="true">
+    <action>
+      <ereg regexp="Refer-To"            search_in="msg" check_it="true" assign_to="refer_to_hdr"/>
+      <ereg regexp="x-cisco-remotecc-request" search_in="msg" check_it="true" assign_to="cisco_refer"/>
+      <ereg regexp="&lt;bulkupdate"      search_in="msg" check_it="true" assign_to="bulkupdate_tag"/>
+      <ereg regexp="line=&quot;1&quot;"  search_in="msg" check_it="true" assign_to="line_1"/>
+      <ereg regexp="line=&quot;2&quot;"  search_in="msg" check_it="true" assign_to="line_2"/>
+      <ereg regexp="line=&quot;3&quot;"  search_in="msg" check_it="true" assign_to="line_3"/>
+    </action>
+  </recv>
+
+  <!-- X-Test-Asserts echoes captures so SIPp 3.7 sees each
+       assign_to variable referenced downstream (otherwise the
+       "Variable X referenced 1 times" warning fails the run). -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      X-Test-Asserts: [$refer_to_hdr] [$cisco_refer] [$bulkupdate_tag] [$line_1] [$line_2] [$line_3]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
+  <CallLengthRepartition value="10, 50, 100, 500, 1000"/>
+
+</scenario>
