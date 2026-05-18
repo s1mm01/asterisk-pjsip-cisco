@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.5.1 — 2026-05-18
+
+Follow-ups to v0.5.0. Three focused improvements; no API or
+sorcery-schema change.
+
+### `pjsip cisco status` — per-contact device attribution
+
+Device facts (MAC, source host, device name, firmware loads)
+were previously rendered as a single block keyed by endpoint
+name. For an endpoint with multiple registered devices —
+e.g. a 6003 with both a CP-8861 (LAN) and a CP-8865 (WAN)
+registered concurrently — only one device's facts displayed,
+conflating two physical phones under one block.
+
+Each contact corresponds to a specific REGISTER, identified by
+its Call-ID. `cisco_mac_info` now carries the Call-ID from the
+producing REGISTER, and the status renderer nests a
+`Cisco device:` subsection inside each `Contact #N` block,
+looked up by that contact's Call-ID. The previous standalone
+post-loop block is removed.
+
+### Body-shape regression coverage — `test_blf_pidf`
+
+The unsolicited-NOTIFY PIDF body builder
+(`cisco_blf_build_pidf`, extracted to
+`res/cisco_unsolicited_blf/pidf.c`) now has a golden-output unit
+test. 9 cases cover every documented exten-state /
+presence-state combination plus XML-special escaping in
+exten + domain. Any drift in the assembled body — activity tag
+order, attribute reorder, namespace edit, missing escape —
+breaks the test before the build it on a real Cisco phone.
+
+The test harness ships a minimal Asterisk-API shim under
+`tests/unit/include/asterisk/` (`ast_str_*`,
+`ast_sip_sanitize_xml`, `AST_EXTENSION_*`, `AST_PRESENCE_*`)
+with implementations in `tests/unit/asterisk_stubs.c`. Future
+body-builder helpers can follow the same pattern without
+needing a real Asterisk runtime; `tests/unit/README.md`
+documents the template.
+
+### CISCO_* dialplan-function recipes
+
+`conf-samples/extensions.conf.cisco-features.sample` grows
+52 → 195 lines, adding four worked recipes for the `CISCO_DND` /
+`CISCO_HUNTGROUP` / `CISCO_CALLFORWARD` dialplan functions:
+
+- **Capture CFwdAll softkey input** — REQUIRED if you want the
+  CFwdAll softkey to do anything server-side. The phone INVITEs
+  a service-URI when the user enters / cancels the forward
+  target; dialplan has to catch it and write
+  `CISCO_CALLFORWARD`. DND and HuntGroup are auto-captured by
+  the modules; CFwdAll is the odd one out — now flagged
+  explicitly in the sample intro.
+- **DND-aware Dial** — skip the Dial leg entirely when the
+  target is on DND, branch to a different voicemail greeting.
+- **CFwdAll-honoring Dial** — REQUIRED if you want a saved CF
+  target to actually redirect calls.
+- **Hunt-group bulk toggle** — close-of-business cron logging
+  everyone out via channel originate into an admin extension.
+
 ## v0.5.0 — 2026-05-18
 
 Diagnostics + tree refactor release. New `pjsip cisco status

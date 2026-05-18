@@ -1,3 +1,30 @@
+asterisk-pjsip-cisco (0.5.1-1) unstable; urgency=medium
+
+  * pjsip cisco status: device facts (MAC, source host, device
+    name, firmware loads) now nest inside each Contact #N block
+    rather than appearing as a single post-loop block. Multi-
+    device endpoints (e.g. one extension with both a LAN and WAN
+    phone registered) no longer conflate physical devices.
+    cisco_mac_info carries the producing REGISTER's Call-ID;
+    matched against ast_sip_contact->call_id at render time.
+  * tests: new test_blf_pidf golden-output test for the
+    unsolicited-NOTIFY PIDF body builder (extracted to
+    res/cisco_unsolicited_blf/pidf.c). Catches body-shape
+    regressions before they reach a real Cisco phone. Asterisk-
+    API shim under tests/unit/include/asterisk/ + matching
+    implementations in tests/unit/asterisk_stubs.c — future
+    body-builder helpers can follow the same pattern.
+  * conf-samples: extensions.conf.cisco-features.sample grows
+    52 -> 195 lines with four CISCO_* dialplan-function recipes
+    (CFwdAll softkey capture, DND-aware Dial, CFwdAll-honoring
+    Dial, hunt-group bulk toggle). Flags the save-side
+    asymmetry — DND / HuntGroup are auto-captured server-side,
+    CFwdAll requires dialplan to catch the phone's service-URI
+    INVITE.
+  * No API or sorcery-schema change; drop-in over v0.5.0.
+
+ -- Andrew Simmonds <simmo@rinseout.org>  Mon, 18 May 2026 17:00:00 +0800
+
 asterisk-pjsip-cisco (0.5.0-1) unstable; urgency=medium
 
   * New `pjsip cisco status <endpoint>` CLI: one-shot dump of
