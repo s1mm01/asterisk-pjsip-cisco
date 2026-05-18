@@ -32,20 +32,28 @@ jobs:
         # downstream module-load smoke (gated on major match) actually
         # exercise this cell's .so files against a real running
         # asterisk binary. Current alignment (verified against
-        # launchpad.net/ubuntu/+source/asterisk):
+        # launchpad.net/ubuntu/+source/asterisk, every pocket):
         #
-        #   ubuntu-22.04 (jammy) — asterisk 20.6.0 in universe
-        #   ubuntu-24.04 (noble) — asterisk 22.5.2 in universe
-        #   (asterisk 23 isn't yet packaged for any current Ubuntu
-        #    release; cell 23 stays runtime-skipped — build-time
-        #    ABI check still applies)
+        #   ubuntu-22.04 (jammy) — asterisk 18.10.0 only
+        #   ubuntu-24.04 (noble) — asterisk 20.6.0 only
         #
-        # When ubuntu releases a new LTS that bumps asterisk, swap
-        # the runner entry. Stable-branch regressions surface within
+        # No current Ubuntu release packages asterisk 22 or 23, in
+        # any pocket including -backports / -proposed. Cells 22 and
+        # 23 therefore stay runtime-skipped; their build-time ABI
+        # check (compile against the resolved upstream tag) still
+        # applies, so a header-level regression would still fail
+        # the build.
+        #
+        # The asterisk-20 cell uses noble rather than jammy because
+        # jammy's apt asterisk is major 18, which doesn't match.
+        # When Ubuntu eventually packages a higher major (or asterisk
+        # lands in jammy/noble -backports), update the runner entry
+        # for the matching cell; the gate logic below picks it up
+        # automatically. Stable-branch regressions surface within
         # a week via the cron.
         include:
           - asterisk_branch: '20'
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
           - asterisk_branch: '22'
             runner: ubuntu-24.04
           - asterisk_branch: '23'
@@ -422,7 +430,7 @@ jobs:
         if: steps.apt_asterisk.outputs.major != matrix.asterisk_branch
         run: |
           echo "Module-load smoke skipped for asterisk-${{ matrix.asterisk_branch }}:"
-          echo "  ubuntu-24.04 apt provides asterisk-${{ steps.apt_asterisk.outputs.major }} only."
+          echo "  ${{ matrix.runner }} apt provides asterisk-${{ steps.apt_asterisk.outputs.major }} only."
           echo "  Build-time ABI compat for this matrix cell is still verified by the build above."
 
       - name: stop asterisk

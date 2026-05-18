@@ -75,10 +75,14 @@ schema change — v0.5.0 installs as a drop-in replacement for v0.4.2.
 - **CI module-load smoke**. The matrix runner installs apt's
   stock Asterisk, builds the modules against it, then loads all
   ten `.so` files into the running daemon and checks
-  `module show like cisco_`. Gated on the apt major matching
-  the build matrix cell — jammy / asterisk-20 for cell 20, noble /
-  asterisk-22 for cell 22. Cell 23 skips load because Ubuntu has
-  no asterisk-23 package yet.
+  `module show like cisco_`. Gated on the apt major matching the
+  build matrix cell. Today only the cell-20 build (noble carries
+  asterisk-20.6) exercises the load path; cells 22 and 23 skip
+  because no current Ubuntu release packages asterisk 22 or 23 in
+  any pocket. The skip is logged, not silent; the build-time ABI
+  check (compile against the resolved upstream tag) still applies
+  to every cell, so a header-level regression still fails the
+  build everywhere.
 
 ## v0.4.2 — 2026-05-16
 
