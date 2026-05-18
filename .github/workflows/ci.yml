@@ -10,6 +10,9 @@ on:
   schedule:
     - cron: '0 6 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: build against asterisk ${{ matrix.asterisk_branch }} on ${{ matrix.runner }}
