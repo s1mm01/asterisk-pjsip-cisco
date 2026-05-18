@@ -30,6 +30,29 @@ SIPP_TRACE_DIR="${SIPP_TRACE_DIR:-/tmp/sipp-traces}"
 
 mkdir -p "$SIPP_TRACE_DIR"
 
+# On any exit (clean or via set -e from a failed scenario), copy
+# asterisk's own log + a snapshot of its sorcery state into the
+# trace dir so the CI upload-artifact step gets both sides of the
+# conversation. Without this, only SIPp's view is captured and
+# server-side decisions are invisible.
+trap 'capture_asterisk_state' EXIT
+capture_asterisk_state() {
+    for f in /var/log/asterisk/*.log; do
+        [ -r "$f" ] || continue
+        sudo cp -f "$f" "$SIPP_TRACE_DIR/$(basename "$f")" 2>/dev/null || true
+        sudo chmod a+r "$SIPP_TRACE_DIR/$(basename "$f")" 2>/dev/null || true
+    done
+    sudo asterisk -rx 'pjsip show endpoints' \
+        > "$SIPP_TRACE_DIR/pjsip-endpoints.txt" 2>&1 || true
+}
+
+# Turn on pjsip wire logging so the SIP-level decisions for the
+# inbound PUBLISH / SUBSCRIBE / REFER are visible in messages.log.
+# Off by default in apt's asterisk; harmless to flip per run since
+# the runner is throwaway.
+sudo asterisk -rx 'pjsip set logger on' >/dev/null 2>&1 || true
+sudo asterisk -rx 'core set verbose 5' >/dev/null 2>&1 || true
+
 # Run one scenario. Trace files land per-scenario in SIPP_TRACE_DIR
 # so CI can upload them as a failure artifact without overlap.
 #
