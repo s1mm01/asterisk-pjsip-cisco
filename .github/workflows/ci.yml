@@ -87,6 +87,14 @@ jobs:
 
       - name: resolve latest ${{ matrix.asterisk_branch }} tag
         id: resolve
+        env:
+          # Authenticate the api.github.com call so we use the 5000/hour
+          # token rate limit instead of the 60/hour shared-IP one. GitHub
+          # Actions runners share egress IPs across the world; the
+          # unauthenticated limit is exhausted fast enough that the call
+          # routinely 403s in busy periods (observed in two of three
+          # cells back-to-back on this branch).
+          GH_TOKEN: ${{ github.token }}
         run: |
           # The /tags?per_page=100 endpoint only returns the most
           # recently created tags (certified-* releases dominate).
@@ -97,6 +105,8 @@ jobs:
           # sort -V for the highest minor+patch.
           BRANCH='${{ matrix.asterisk_branch }}'
           TAG=$(curl -fsSL \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
                   "https://api.github.com/repos/asterisk/asterisk/git/matching-refs/tags/${BRANCH}" \
               | jq -r '.[].ref' \
               | sed 's|^refs/tags/||' \
