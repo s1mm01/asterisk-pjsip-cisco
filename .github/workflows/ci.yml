@@ -389,19 +389,17 @@ jobs:
             asterisk-dev \
             sip-tester
 
-      - name: fetch pjproject from apt asterisk's source package
-        # CLAUDE.md's "header-mismatch trap" in CI form: apt's
-        # asterisk binary was built with a specific pjproject —
-        # but NOT necessarily the version upstream's versions.mak
-        # pins for that asterisk tag. Debian/Ubuntu sometimes bump
-        # the bundled pjproject for security fixes between security
-        # releases, so resolving via upstream's versions.mak gives
-        # the wrong answer ABI-wise.
-        #
-        # `apt source asterisk` pulls the *exact* tarball Debian
-        # used to build the binary, including any third-party/
-        # bundled pjproject that diverges from the upstream pin.
-        # That's the authoritative header source for our rebuild.
+      - name: prepare apt asterisk source tree for PJPROJECT_DIR
+        # `apt source asterisk` pulls the *exact* source tarballs
+        # Debian used to build the apt binary. Combined with
+        # PJPROJECT_DIR mode + the Makefile's auto-application of
+        # asterisk's third-party/pjproject/patches/config_site.h,
+        # this gives our rebuild the same pjsip / pjmedia struct
+        # layouts the apt binary was compiled with — required by
+        # CLAUDE.md's "header-mismatch trap" rule. Without this
+        # alignment, on_rx_request hooks silently observe NULL
+        # msg pointers (every rdata->msg_info.msg read lands at
+        # the wrong offset).
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           # Ubuntu noble switched /etc/apt/sources.list.d/ubuntu.sources
@@ -419,113 +417,67 @@ jobs:
             ls -la apt-source
             exit 1
           fi
+          echo "APT_ASTERISK_SRC=${{ github.workspace }}/$SRC" >> "$GITHUB_ENV"
           echo "Debian asterisk source extracted to: $SRC"
-          echo "--- top-level contents of $SRC ---"
-          ls "$SRC" | head -30
-          echo "--- contents of $SRC/third-party ---"
-          ls "$SRC/third-party" | head -30
-          echo "--- pjlib dirs anywhere in source ---"
-          find "$SRC" -maxdepth 4 -type d -name pjlib | head -10
 
-          # Locate the bundled pjproject. Debian's asterisk repacks
-          # pjproject into a separate .orig-Xpjproject.tar.xz
-          # component, which dpkg-source extracts somewhere in the
-          # source tree but not necessarily at third-party/pjproject.
-          # `find ... -name pjlib -type d` gives us a reliable anchor
-          # — pjlib is pjproject's main library dir, and its parent
-          # is the pjproject source root.
+          # Debian splits pjproject into a separate orig-Xpjproject.tar.xz
+          # which dpkg-source extracts to $SRC/Xpjproject. Our Makefile's
+          # PJPROJECT_DIR mode (and asterisk's own build) expects pjproject
+          # at $SRC/third-party/pjproject/source. Move it into place.
           PJSRC=$(find "$SRC" -maxdepth 4 -type d -name pjlib | head -1)
           if [ -z "$PJSRC" ]; then
-            echo "::error::No pjproject (pjlib dir) found anywhere in apt source"
+            echo "::error::No pjproject (pjlib dir) found in apt source"
             exit 1
           fi
           PJROOT=$(dirname "$PJSRC")
-          echo "pjproject source root: $PJROOT"
-          mkdir -p apt-pjproject
-          cp -r "$PJROOT/." apt-pjproject/
-
-          # Try to print the resolved version (best-effort; serves
-          # as a diagnostic when the ABI mismatch keeps biting).
-          if [ -f apt-pjproject/version.mak ]; then
-            grep -E 'VERSION' apt-pjproject/version.mak || true
+          if [ "$PJROOT" != "$SRC/third-party/pjproject/source" ]; then
+            mkdir -p "$SRC/third-party/pjproject/source"
+            cp -r "$PJROOT/." "$SRC/third-party/pjproject/source/"
           fi
+          PJ_SOURCE="$SRC/third-party/pjproject/source"
 
-          # Same K&R prototype fix the upstream fetch applies; see
-          # the comment on the "fetch pjproject headers" step.
+          # K&R prototype fix that stock pjproject 2.x carries — trips
+          # -Werror -Wstrict-prototypes under our build. See the upstream
+          # fetch step for the longer rationale.
           sed -i 's|pj_thread_unregister()|pj_thread_unregister(void)|' \
-              apt-pjproject/pjlib/include/pj/os.h
+              "$PJ_SOURCE/pjlib/include/pj/os.h"
 
-          # Empty config_site.h while we run ./configure — it
-          # generates os_auto.h / m_auto.h / sock_select.h, none of
-          # which need our final config defines. Asterisk's real
-          # config_site.h (with its inclusion of asterisk_malloc_debug.h)
-          # would break configure's link-tests since the asterisk
-          # malloc wrappers aren't available standalone.
-          : > apt-pjproject/pjlib/include/pj/config_site.h
-          (cd apt-pjproject && ./configure --disable-libwebrtc-aec >/dev/null)
-
-          # CRITICAL — asterisk's bundled pjproject is *built* with
-          # its own config_site.h that defines PJSIP_MAX_PKT_LEN to
-          # 65535 (default 2000) and PJSIP_MAX_MODULE to 38 (default
-          # 32). Those macros size arrays *inside* pjsip_rx_data
-          # (tp_info.packet, pkt_info.packet, msg_info.msg_buf,
-          # endpt_info.mod_data). An empty config_site.h leaves
-          # the defaults, which shifts the offset of msg_info.msg
-          # by ~128 KB relative to the binary asterisk loads our
-          # modules into. Result: every rdata->msg_info.msg read
-          # from our hooks lands at the wrong address and returns
-          # NULL. The fix is to install asterisk's own config_site.h
-          # AFTER configure so it's in scope at compile time. The
-          # asterisk_malloc_debug.h reference inside it is guarded
-          # by _ASTERISK_ASTMM_H which is set whenever asterisk.h
-          # has been included first — and asterisk.h is always
-          # included first by our modules.
-          install -m 0644 \
-              asterisk-src/third-party/pjproject/patches/config_site.h \
-              apt-pjproject/pjlib/include/pj/config_site.h
-          install -m 0644 \
-              asterisk-src/third-party/pjproject/patches/asterisk_malloc_debug.h \
-              apt-pjproject/pjlib/include/pj/asterisk_malloc_debug.h
+          # Empty config_site.h so pjproject's standalone ./configure
+          # (which generates os_auto.h / m_auto.h / sock_select.h) doesn't
+          # trip on asterisk_malloc_debug.h referencing symbols the
+          # configure link-tests can't resolve. The Makefile overlays
+          # asterisk's real config_site.h on top after configure has
+          # finished.
+          : > "$PJ_SOURCE/pjlib/include/pj/config_site.h"
+          (cd "$PJ_SOURCE" && ./configure --disable-libwebrtc-aec >/dev/null)
 
       - name: rebuild + install modules against apt asterisk-dev
-        # The earlier `make` step compiled against the resolved
-        # upstream tag (e.g. 20.15.x). That's our compile-time-
-        # against-latest signal and stays the load-bearing check
-        # for ABI breakage in unreleased asterisk changes. But the
-        # resulting .so files reference symbols as-named in that
-        # tag, which may not match apt's older patch within the
-        # same LTS major:
+        # Re-build with PJPROJECT_DIR pointing at the apt asterisk
+        # source tree. Three things flow from that:
         #
-        #   apt 20.6.0:  ast_sip_push_task         (function symbol)
-        #   upstream 20.13+: __ast_sip_push_task   (renamed; old name
-        #                                           became a macro)
+        # 1. pjsip headers come from $APT_ASTERISK_SRC/third-party/
+        #    pjproject/source, which is apt's binary's exact pjproject
+        #    (~2.13.1 for asterisk 20.6).
+        # 2. The Makefile's auto-patch rule overlays
+        #    $APT_ASTERISK_SRC/third-party/pjproject/patches/
+        #    config_site.h + asterisk_malloc_debug.h, which is what
+        #    Debian's asterisk build did. Struct layouts now match.
+        # 3. asterisk headers come from $APT_ASTERISK_SRC/include,
+        #    which is what apt asterisk-dev ships (Debian binds them).
+        #    No symbol-rename surprises like
+        #    ast_sip_push_task → __ast_sip_push_task.
         #
-        # Rebuild without PJPROJECT_DIR so the Makefile picks up
-        # /usr/include/asterisk from asterisk-dev (matching the
-        # apt binary). PJPROJECT_INCLUDE points at the apt-matching
-        # pjproject we fetched in the previous step (NOT the latest-
-        # tag one) — see that step for why this matters.
-        #
-        # `make clean && make && sudo make install` runs in one
-        # step so PJPROJECT_INCLUDE stays in scope for all three
-        # (sudo --preserve-env carries it through `sudo make
-        # install`; the Makefile's check-headers prereq otherwise
-        # re-runs and fails when it can't find pjproject).
-        # ASTERISK_MODULES_DIR / ASTERISK_DOC_DIR auto-resolve
-        # from /etc/asterisk/asterisk.conf via the Makefile.
+        # `make clean && make && sudo make install` runs together so
+        # PJPROJECT_DIR stays in scope through all three (sudo
+        # --preserve-env carries it through `sudo make install`).
+        # ASTERISK_MODULES_DIR / ASTERISK_DOC_DIR auto-resolve from
+        # /etc/asterisk/asterisk.conf via the Makefile.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
-        env:
-          PJPROJECT_INCLUDE: >-
-            -DPJ_AUTOCONF=1
-            -I${{ github.workspace }}/apt-pjproject/pjlib/include
-            -I${{ github.workspace }}/apt-pjproject/pjlib-util/include
-            -I${{ github.workspace }}/apt-pjproject/pjnath/include
-            -I${{ github.workspace }}/apt-pjproject/pjmedia/include
-            -I${{ github.workspace }}/apt-pjproject/pjsip/include
         run: |
           make clean
-          make
-          sudo --preserve-env=PJPROJECT_INCLUDE make install
+          make PJPROJECT_DIR="$APT_ASTERISK_SRC"
+          sudo --preserve-env=APT_ASTERISK_SRC \
+              make install PJPROJECT_DIR="$APT_ASTERISK_SRC"
 
       - name: install test pjsip.conf + extensions.conf
         # Drop in a known-good pjsip.conf with a spread of [type=cisco]

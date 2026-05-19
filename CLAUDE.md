@@ -33,6 +33,27 @@ There is **no unit-test framework**. CI (`.github/workflows/ci.yml`) builds agai
 
 Any code that touches `struct ast_sip_endpoint` (or other PJSIP structs) deeper than its first few fields must be compiled against the **exact same headers** the running asterisk binary was built with. `asterisk-dev` from apt is frequently stale relative to a self-built asterisk; building against stale headers produces modules that compile cleanly and SEGV at runtime when struct field offsets diverge. This is why `PJPROJECT_DIR` is the recommended build mode — it pins both header sets to the same tree.
 
+There is a quieter form of the same trap that bites even when headers and binary nominally agree on pjproject's *version*. Asterisk's bundled pjproject is built with a customised `third-party/pjproject/patches/config_site.h` that redefines several layout-critical macros — most notably `PJSIP_MAX_PKT_LEN` (65535 vs default 2000), `PJSIP_MAX_MODULE` (38 vs 32), and `PJMEDIA_MAX_SDP_FMT` (varies by asterisk version). Those macros size **arrays inside** `pjsip_rx_data`, `pjmedia_sdp_media`, and `pjsip_endpoint`, so they directly shift the offset of every later struct field. Compiling our modules against stock pjproject headers (e.g. an `apt source pjproject`-style tree without the overlay) while loading them into an asterisk built *with* the overlay produces struct offsets that disagree by tens of kilobytes — every `rdata->msg_info.msg` read lands at the wrong address and silently returns NULL. No SEGV, no warning; `on_rx_request` hooks just no-op.
+
+The Makefile's `PJPROJECT_DIR` mode handles this automatically: it overlays `<dir>/third-party/pjproject/patches/config_site.h` onto `<dir>/third-party/pjproject/source/pjlib/include/pj/config_site.h` (and `asterisk_malloc_debug.h` alongside it) as a build prerequisite, mirroring asterisk's own bundled-pjproject Makefile rule. In any other mode the Makefile prints a build-time warning.
+
+For **Debian/Ubuntu apt asterisk** users: `make PJPROJECT_DIR=/usr/include` does **not** work (apt asterisk-dev doesn't ship the bundled pjproject tree). The right invocation is:
+
+```sh
+apt source asterisk                              # drops asterisk-X.Y.Z.../ in CWD
+cd asterisk-X.Y.Z.../
+# Debian splits pjproject into orig-Xpjproject which lands at ./Xpjproject;
+# move it to where asterisk (and our Makefile) expects to find it:
+mkdir -p third-party/pjproject/source
+cp -r Xpjproject/. third-party/pjproject/source/
+cd third-party/pjproject/source && ./configure --disable-libwebrtc-aec && cd -
+# Now build the modules against this tree:
+cd /path/to/asterisk-pjsip-cisco
+make PJPROJECT_DIR=/path/to/asterisk-X.Y.Z...
+```
+
+The CI workflow does exactly this — see the "prepare apt asterisk source tree for PJPROJECT_DIR" step in `.github/workflows/ci.yml`.
+
 ## Architecture (the non-obvious bits)
 
 The Cisco firmware classifies a line button as **BLF Speed Dial** (lit/unlit, hook icon) vs **plain Speed Dial** (no state, keypad icon) only when **all four** of these signals are present at REGISTER time:

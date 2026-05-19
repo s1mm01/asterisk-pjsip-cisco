@@ -255,23 +255,13 @@ struct ast_sip_endpoint *cisco_pjsip_module_match(
 	struct ast_sip_endpoint *endpoint;
 	struct cisco_endpoint *cisco;
 
-	ast_log(LOG_NOTICE,
-		"cisco-match DEBUG: method=%s opt_event=%s rdata=%p msg=%p\n",
-		method_name, opt_event_name ? opt_event_name : "(null)",
-		(void *) rdata, rdata ? (void *) rdata->msg_info.msg : NULL);
 	if (!rdata || !rdata->msg_info.msg
 		|| rdata->msg_info.msg->type != PJSIP_REQUEST_MSG) {
-		ast_log(LOG_NOTICE,
-			"cisco-match DEBUG: GUARD#1 rdata/msg/type tripped\n");
 		return NULL;
 	}
 
 	if (pj_stricmp2(&rdata->msg_info.msg->line.req.method.name,
 			method_name)) {
-		ast_log(LOG_NOTICE,
-			"cisco-match DEBUG: GUARD#2 method=[%.*s] != %s\n",
-			(int) rdata->msg_info.msg->line.req.method.name.slen,
-			rdata->msg_info.msg->line.req.method.name.ptr, method_name);
 		return NULL;
 	}
 
@@ -282,33 +272,21 @@ struct ast_sip_endpoint *cisco_pjsip_module_match(
 				&event_hdr_name, NULL);
 		if (!event_hdr
 			|| pj_stricmp2(&event_hdr->hvalue, opt_event_name)) {
-			ast_log(LOG_NOTICE,
-				"cisco-match DEBUG: GUARD#3 Event hdr missing or != %s\n",
-				opt_event_name);
 			return NULL;
 		}
 	}
 
 	endpoint = cisco_rdata_get_endpoint(rdata);
 	if (!endpoint) {
-		ast_log(LOG_NOTICE,
-			"cisco-match DEBUG: GUARD#4 cisco_rdata_get_endpoint=NULL\n");
 		return NULL;
 	}
-	ast_log(LOG_NOTICE, "cisco-match DEBUG: endpoint resolved id=%s\n",
-		ast_sorcery_object_get_id(endpoint));
 
 	cisco = cisco_endpoint_get(ast_sorcery_object_get_id(endpoint));
 	if (!cisco) {
-		ast_log(LOG_NOTICE,
-			"cisco-match DEBUG: GUARD#5 cisco_endpoint_get('%s')=NULL\n",
-			ast_sorcery_object_get_id(endpoint));
 		ao2_cleanup(endpoint);
 		return NULL;
 	}
 	ao2_cleanup(cisco);
 
-	ast_log(LOG_NOTICE, "cisco-match DEBUG: MATCHED endpoint '%s'\n",
-		ast_sorcery_object_get_id(endpoint));
 	return endpoint;
 }

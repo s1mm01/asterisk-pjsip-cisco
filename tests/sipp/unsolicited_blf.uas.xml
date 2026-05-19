@@ -5,9 +5,22 @@
   Unsolicited BLF NOTIFYs — UAS half.
 
   Listens on TCP port 15060 (the Contact URI port the paired UAC
-  registered). asterisk's post-REGISTER deferred task pushes one
-  Event: presence NOTIFY per entry in 1010's subscribe= list —
-  1030 and 1050 in tests/ci/pjsip.conf, so we expect exactly two.
+  registered). After 1010's REGISTER, asterisk fires THREE deferred
+  post-REGISTER tasks at this Contact:
+
+    * cisco-bulkupdate: one REFER carrying 1010's line config (it has
+      type=cisco like every other endpoint in tests/ci/pjsip.conf).
+    * cisco-unsolicited-blf: one Event: presence NOTIFY per entry in
+      1010's subscribe= list — 1030 and 1050, so two NOTIFYs.
+
+  Total inbound: 1 REFER + 2 NOTIFYs in non-deterministic order. We
+  must accept all six orderings (REFER first / middle / last). The
+  scenario pattern is: optional REFER slot in every gap between
+  mandatory NOTIFY slots. SIPp's optional-recv semantics: if the
+  inbound at this slot doesn't match, AND a later mandatory recv
+  could match it, skip the optional (and its <send>) and advance.
+  When the late REFER arrives, an optional REFER slot matches and
+  ACKs it; otherwise the optional slot is skipped harmlessly.
 
   Assertions per NOTIFY:
     * Event: presence header — no SUBSCRIBE preceded this, so
@@ -16,12 +29,37 @@
     * Tuple id matches one of the watched extensions (guards
       against subscription leaks).
 
-  Order across the subscribe= list isn't guaranteed (deferred-task
-  scheduling), but each NOTIFY individually has to be Cisco-shaped
-  and targeted at one of the two watched extensions.
+  Per REFER:
+    * Body identifies cisco-bulkupdate (Content-ID + bulkupdate tag).
+      Detailed bulkupdate-body shape assertions live in the
+      dedicated bulkupdate_refer scenario; here we just confirm
+      we got the REFER and ACK it.
 -->
 <scenario name="cisco_unsolicited_blf_uas">
 
+  <!-- ====== Slot 1: optional REFER (matches if REFER arrives first) ====== -->
+  <recv request="REFER" optional="true" crlf="true">
+    <action>
+      <ereg regexp="bulkupdate" search_in="msg" check_it="true" assign_to="bulk_refer_1"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Refer-Sub: false
+      X-Test-Asserts: [$bulk_refer_1]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- ====== Slot 2: mandatory first NOTIFY ====== -->
   <recv request="NOTIFY" crlf="true">
     <action>
       <ereg regexp="Event: *presence"                 search_in="msg" check_it="true" assign_to="evt_hdr_1"/>
@@ -45,6 +83,29 @@
     ]]>
   </send>
 
+  <!-- ====== Slot 3: optional REFER (matches if REFER arrives mid-burst) ====== -->
+  <recv request="REFER" optional="true" crlf="true">
+    <action>
+      <ereg regexp="bulkupdate" search_in="msg" check_it="true" assign_to="bulk_refer_2"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Refer-Sub: false
+      X-Test-Asserts: [$bulk_refer_2]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- ====== Slot 4: mandatory second NOTIFY ====== -->
   <recv request="NOTIFY" crlf="true">
     <action>
       <ereg regexp="Event: *presence"                 search_in="msg" check_it="true" assign_to="evt_hdr_2"/>
@@ -63,6 +124,28 @@
       [last_Call-ID:]
       [last_CSeq:]
       X-Test-Asserts: [$evt_hdr_2] [$cisco_ns_2] [$target_2]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- ====== Slot 5: optional REFER (matches if REFER arrives last) ====== -->
+  <recv request="REFER" optional="true" crlf="true">
+    <action>
+      <ereg regexp="bulkupdate" search_in="msg" check_it="true" assign_to="bulk_refer_3"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Refer-Sub: false
+      X-Test-Asserts: [$bulk_refer_3]
       Content-Length: 0
 
     ]]>

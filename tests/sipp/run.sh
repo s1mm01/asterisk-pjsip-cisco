@@ -52,11 +52,6 @@ capture_asterisk_state() {
 # the runner is throwaway.
 sudo asterisk -rx 'pjsip set logger on' >/dev/null 2>&1 || true
 sudo asterisk -rx 'core set verbose 5' >/dev/null 2>&1 || true
-# core set debug 3 mirrors the live-PBX bench setup. Brings the
-# distributor / endpoint-identifier / authenticator_digest /
-# registrar debug into full.log so we can diff CI against the
-# known-good live-PBX flow line by line.
-sudo asterisk -rx 'core set debug 3' >/dev/null 2>&1 || true
 
 # Run one scenario. Trace files land per-scenario in SIPP_TRACE_DIR
 # so CI can upload them as a failure artifact without overlap.

@@ -140,6 +140,52 @@ endif
 endif
 
 # --------------------------------------------------------------------
+# Apply asterisk's pjproject patches (config_site.h + the
+# asterisk_malloc_debug.h it includes).
+#
+# Stock pjproject ships with an empty config_site.h. Asterisk's
+# bundled-pjproject build overlays a customised config_site.h via the
+# pattern rule in third-party/pjproject/Makefile:
+#
+#     source/pjlib/include/pj/%.h: patches/%.h
+#
+# That file redefines several layout-critical macros — most notably
+#
+#     PJSIP_MAX_PKT_LEN  65535   (default 2000)
+#     PJSIP_MAX_MODULE   38      (default 32)
+#     PJMEDIA_MAX_SDP_FMT  72/64 (default 32)
+#
+# which size arrays *inside* pjsip_rx_data, pjmedia_sdp_media, and
+# pjsip_endpoint. Compiling our modules against stock pjproject
+# headers while loading them into an asterisk built with the
+# patched headers produces struct offsets that disagree by tens of
+# kilobytes — our hooks read rdata->msg_info.msg at the wrong
+# address and silently observe NULL. CLAUDE.md's "header-mismatch
+# trap" in its worst form (no crash, no warning, just functional
+# break).
+#
+# Mirror asterisk's own rule so PJPROJECT_DIR-mode builds are
+# automatically struct-compatible with the runtime asterisk,
+# regardless of whether the user has run asterisk's own build yet.
+# --------------------------------------------------------------------
+
+ifneq ($(strip $(PJPROJECT_DIR)),)
+PJPROJECT_PATCHES_DIR   := $(PJPROJECT_DIR)/third-party/pjproject/patches
+PJPROJECT_SOURCE_PJ_DIR := $(PJPROJECT_DIR)/third-party/pjproject/source/pjlib/include/pj
+PJPROJECT_PATCH_HEADERS := config_site.h asterisk_malloc_debug.h
+
+# Only include patches that actually exist in this asterisk source tree
+# (older asterisks may ship a different set).
+PJPROJECT_APPLIED_PATCHES := \
+    $(foreach h,$(PJPROJECT_PATCH_HEADERS),\
+        $(if $(wildcard $(PJPROJECT_PATCHES_DIR)/$(h)),\
+            $(PJPROJECT_SOURCE_PJ_DIR)/$(h)))
+
+$(PJPROJECT_SOURCE_PJ_DIR)/%.h: $(PJPROJECT_PATCHES_DIR)/%.h
+	@cp -f $< $@
+endif
+
+# --------------------------------------------------------------------
 # Build flags. We inherit user CFLAGS/LDFLAGS for distro packaging.
 # --------------------------------------------------------------------
 
@@ -238,7 +284,7 @@ DOC_XML  ?= $(DOC_BUILD_DIR)/res_pjsip_cisco-en_US.xml
 
 .PHONY: all clean install uninstall doc check check-headers help tests
 
-all: check-headers $(ALL_SOS) $(DOC_XML)
+all: check-headers $(PJPROJECT_APPLIED_PATCHES) $(ALL_SOS) $(DOC_XML)
 
 # --------------------------------------------------------------------
 # Tests: build-artefact smoke checks + pjlib-linked unit tests. See
@@ -336,6 +382,23 @@ check-headers:
 	    echo "  sudo apt install libpjproject-dev          (preferred)" >&2 ; \
 	    echo "  make PJPROJECT_DIR=/path/to/asterisk-source (uses bundled headers)" >&2 ; \
 	    exit 1 ; \
+	fi
+	@if [ -z "$(strip $(PJPROJECT_DIR))" ]; then \
+	    echo "" >&2 ; \
+	    echo "WARNING: building without PJPROJECT_DIR." >&2 ; \
+	    echo "  The pjproject headers you've supplied are not being" >&2 ; \
+	    echo "  overlaid with asterisk's third-party/pjproject/patches/" >&2 ; \
+	    echo "  config_site.h. If the runtime asterisk was built with" >&2 ; \
+	    echo "  the patched config (every Debian/Ubuntu apt asterisk is)," >&2 ; \
+	    echo "  several pjsip / pjmedia struct layouts will disagree" >&2 ; \
+	    echo "  with the binary. The modules will load and run, but" >&2 ; \
+	    echo "  on_rx_request hooks observe NULL msg pointers and" >&2 ; \
+	    echo "  silently no-op. See CLAUDE.md \"header-mismatch trap\"." >&2 ; \
+	    echo "  Recommended: rebuild with PJPROJECT_DIR pointing at" >&2 ; \
+	    echo "  the asterisk source tree your runtime asterisk was" >&2 ; \
+	    echo "  built from (e.g. \`apt source asterisk\` for the apt" >&2 ; \
+	    echo "  binary)." >&2 ; \
+	    echo "" >&2 ; \
 	fi
 
 # --------------------------------------------------------------------
