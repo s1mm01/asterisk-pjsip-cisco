@@ -37,10 +37,10 @@
   </send>
 
   <!-- Reason header on every REGISTER matches real Cisco firmware
-       behaviour. Without it, the harvest's parse_reason_header()
-       clears Device/Active/Inactive load fields back to empty,
-       overwriting whatever a prior register_optionsind scenario
-       harvested for the same endpoint. -->
+       behaviour when cisco-usecallmanager mode is enabled. The
+       harvest preserves device facts across REGISTERs that don't
+       carry a Reason, but sending one here mirrors what a real
+       phone does. -->
 
   <recv response="401" auth="true">
   </recv>

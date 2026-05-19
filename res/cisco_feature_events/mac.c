@@ -184,11 +184,18 @@ static int reason_extract(const char *src, const char *key,
 }
 
 /* Parse the REGISTER's Reason header (text= field, when it follows the
- * chan_sip patch's "SIP;cause=200;text=\"...\"" shape) and pull
- * Cisco's Name= / ActiveLoad= / Load= / InactiveLoad= tokens into the
- * info->device_name / active_load / inactive_load fields. Empties any
- * unparseable field — older firmware without Reason reporting, or a
- * non-Cisco REGISTER, just leaves them blank. */
+ * chan_sip patch's "SIP;cause=200;text=\"...\"" shape) and update
+ * Cisco's Name= / ActiveLoad= / Load= / InactiveLoad= tokens in the
+ * info->device_name / active_load / inactive_load fields.
+ *
+ * Preserves fields whose token is absent (or whose Reason header is
+ * absent entirely) — real Cisco firmware sends Reason on every
+ * REGISTER when cisco-usecallmanager mode is enabled, but a REGISTER
+ * without it shouldn't be treated as "phone forgot its identity": we
+ * leave whatever was previously harvested intact and only refresh the
+ * fields the new Reason actually carries. The harvest caller
+ * pre-fills info from the existing map entry so this fall-through
+ * preservation works across re-REGISTERs. */
 static void parse_reason_header(pjsip_msg *msg, struct cisco_mac_info *info)
 {
 	pj_str_t hdr_name = pj_str("Reason");
@@ -196,10 +203,7 @@ static void parse_reason_header(pjsip_msg *msg, struct cisco_mac_info *info)
 	char reason[512];
 	const char *text;
 	size_t len;
-
-	info->device_name[0] = '\0';
-	info->active_load[0] = '\0';
-	info->inactive_load[0] = '\0';
+	char tmp[sizeof(info->inactive_load)];
 
 	hdr = (pjsip_generic_string_hdr *) pjsip_msg_find_hdr_by_name(msg,
 		&hdr_name, NULL);
@@ -223,15 +227,22 @@ static void parse_reason_header(pjsip_msg *msg, struct cisco_mac_info *info)
 		}
 	}
 
-	reason_extract(text, "Name", info->device_name, sizeof(info->device_name));
-	if (!reason_extract(text, "ActiveLoad",
-			info->active_load, sizeof(info->active_load))) {
-		/* Older firmware uses Load= rather than ActiveLoad=. */
-		reason_extract(text, "Load", info->active_load,
-			sizeof(info->active_load));
+	/* Each field updates only when its token is present in this
+	 * Reason; reason_extract() returns 0 (and zeroes tmp) on miss.
+	 * Routing the result through tmp keeps info->* intact when the
+	 * token isn't there, so partial Reasons preserve previously-
+	 * harvested values. */
+	if (reason_extract(text, "Name", tmp, sizeof(tmp))) {
+		ast_copy_string(info->device_name, tmp, sizeof(info->device_name));
 	}
-	reason_extract(text, "InactiveLoad", info->inactive_load,
-		sizeof(info->inactive_load));
+	if (reason_extract(text, "ActiveLoad", tmp, sizeof(tmp))
+		|| reason_extract(text, "Load", tmp, sizeof(tmp))) {
+		/* Older firmware uses Load= rather than ActiveLoad=. */
+		ast_copy_string(info->active_load, tmp, sizeof(info->active_load));
+	}
+	if (reason_extract(text, "InactiveLoad", tmp, sizeof(tmp))) {
+		ast_copy_string(info->inactive_load, tmp, sizeof(info->inactive_load));
+	}
 }
 
 /* On every authenticated REGISTER from a Cisco endpoint, learn (or
@@ -321,6 +332,24 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 	}
 	info.expires = ast_tvnow();
 	info.expires.tv_sec += ttl + 60;     /* small grace past the registration */
+
+	/* Pre-fill the Reason-derived fields from any existing entry for
+	 * this MAC, so a REGISTER without a Reason header (or with a
+	 * partial Reason that only carries some of the tokens) preserves
+	 * previously-harvested device facts instead of wiping them.
+	 * parse_reason_header() overwrites only the fields the new
+	 * Reason actually carries. */
+	{
+		struct cisco_mac_info existing;
+		if (!cisco_mac_lookup_by_mac(mac, &existing)) {
+			ast_copy_string(info.device_name, existing.device_name,
+				sizeof(info.device_name));
+			ast_copy_string(info.active_load, existing.active_load,
+				sizeof(info.active_load));
+			ast_copy_string(info.inactive_load, existing.inactive_load,
+				sizeof(info.inactive_load));
+		}
+	}
 
 	/* Reason header (device name + firmware) is optional — older firmware
 	 * or phones not configured for cisco-usecallmanager Reason reporting
