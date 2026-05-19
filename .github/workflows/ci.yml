@@ -420,30 +420,29 @@ jobs:
             exit 1
           fi
           echo "Debian asterisk source extracted to: $SRC"
+          echo "--- top-level contents of $SRC ---"
+          ls "$SRC" | head -30
           echo "--- contents of $SRC/third-party ---"
           ls "$SRC/third-party" | head -30
+          echo "--- pjlib dirs anywhere in source ---"
+          find "$SRC" -maxdepth 4 -type d -name pjlib | head -10
 
-          # Locate the bundled pjproject. Asterisk's source ships it
-          # in one of two shapes depending on the release era and
-          # how Debian patched things:
-          #   * third-party/pjproject/source/    (pre-extracted source tree)
-          #   * third-party/pjproject-X.Y.Z.tar.{bz2,gz}  (tarball)
-          mkdir -p apt-pjproject
-          if [ -d "$SRC/third-party/pjproject/source" ]; then
-            echo "Using pre-extracted pjproject from third-party/pjproject/source"
-            cp -r "$SRC/third-party/pjproject/source/." apt-pjproject/
-          else
-            TARBALL=$(ls "$SRC"/third-party/pjproject-*.tar.bz2 \
-                         "$SRC"/third-party/pjproject-*.tar.gz \
-                         2>/dev/null | head -1)
-            if [ -z "$TARBALL" ]; then
-              echo "::error::No pjproject tarball or pre-extracted source found in apt source"
-              find "$SRC/third-party" -maxdepth 2 -name 'pjproject*'
-              exit 1
-            fi
-            echo "Extracting $TARBALL"
-            tar xf "$TARBALL" -C apt-pjproject --strip-components=1
+          # Locate the bundled pjproject. Debian's asterisk repacks
+          # pjproject into a separate .orig-Xpjproject.tar.xz
+          # component, which dpkg-source extracts somewhere in the
+          # source tree but not necessarily at third-party/pjproject.
+          # `find ... -name pjlib -type d` gives us a reliable anchor
+          # — pjlib is pjproject's main library dir, and its parent
+          # is the pjproject source root.
+          PJSRC=$(find "$SRC" -maxdepth 4 -type d -name pjlib | head -1)
+          if [ -z "$PJSRC" ]; then
+            echo "::error::No pjproject (pjlib dir) found anywhere in apt source"
+            exit 1
           fi
+          PJROOT=$(dirname "$PJSRC")
+          echo "pjproject source root: $PJROOT"
+          mkdir -p apt-pjproject
+          cp -r "$PJROOT/." apt-pjproject/
 
           # Try to print the resolved version (best-effort; serves
           # as a diagnostic when the ABI mismatch keeps biting).
