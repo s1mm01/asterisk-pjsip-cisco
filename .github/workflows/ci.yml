@@ -454,8 +454,38 @@ jobs:
           # the comment on the "fetch pjproject headers" step.
           sed -i 's|pj_thread_unregister()|pj_thread_unregister(void)|' \
               apt-pjproject/pjlib/include/pj/os.h
+
+          # Empty config_site.h while we run ./configure — it
+          # generates os_auto.h / m_auto.h / sock_select.h, none of
+          # which need our final config defines. Asterisk's real
+          # config_site.h (with its inclusion of asterisk_malloc_debug.h)
+          # would break configure's link-tests since the asterisk
+          # malloc wrappers aren't available standalone.
           : > apt-pjproject/pjlib/include/pj/config_site.h
           (cd apt-pjproject && ./configure --disable-libwebrtc-aec >/dev/null)
+
+          # CRITICAL — asterisk's bundled pjproject is *built* with
+          # its own config_site.h that defines PJSIP_MAX_PKT_LEN to
+          # 65535 (default 2000) and PJSIP_MAX_MODULE to 38 (default
+          # 32). Those macros size arrays *inside* pjsip_rx_data
+          # (tp_info.packet, pkt_info.packet, msg_info.msg_buf,
+          # endpt_info.mod_data). An empty config_site.h leaves
+          # the defaults, which shifts the offset of msg_info.msg
+          # by ~128 KB relative to the binary asterisk loads our
+          # modules into. Result: every rdata->msg_info.msg read
+          # from our hooks lands at the wrong address and returns
+          # NULL. The fix is to install asterisk's own config_site.h
+          # AFTER configure so it's in scope at compile time. The
+          # asterisk_malloc_debug.h reference inside it is guarded
+          # by _ASTERISK_ASTMM_H which is set whenever asterisk.h
+          # has been included first — and asterisk.h is always
+          # included first by our modules.
+          install -m 0644 \
+              asterisk-src/third-party/pjproject/patches/config_site.h \
+              apt-pjproject/pjlib/include/pj/config_site.h
+          install -m 0644 \
+              asterisk-src/third-party/pjproject/patches/asterisk_malloc_debug.h \
+              apt-pjproject/pjlib/include/pj/asterisk_malloc_debug.h
 
       - name: rebuild + install modules against apt asterisk-dev
         # The earlier `make` step compiled against the resolved
