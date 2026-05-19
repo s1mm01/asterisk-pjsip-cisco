@@ -252,11 +252,16 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 	long ttl = -1;
 	struct cisco_mac_info info;
 
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG harvest: ENTER\n");
 	endpoint = cisco_pjsip_module_match(rdata, "REGISTER", NULL);
 	if (!endpoint) {
+		ast_log(LOG_NOTICE,
+			"cisco-mac DEBUG harvest: cisco_pjsip_module_match returned NULL "
+			"(not a Cisco REGISTER for this rdata)\n");
 		return;
 	}
 	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG harvest: endpoint_id=%s\n", endpoint_id);
 	msg = rdata->msg_info.msg;
 
 	/* First MAC found in any Contact's header params wins; track the
@@ -287,9 +292,14 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 	}
 
 	if (!have_mac) {
+		ast_log(LOG_NOTICE,
+			"cisco-mac DEBUG harvest: no MAC found in any Contact "
+			"+sip.instance / +u.sip param for endpoint '%s'\n", endpoint_id);
 		ao2_cleanup(endpoint);
 		return;
 	}
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG harvest: extracted MAC=%s from Contact\n",
+		mac);
 
 	if (ttl < 0) {
 		expires_hdr = (pjsip_expires_hdr *) pjsip_msg_find_hdr(msg,
@@ -329,6 +339,10 @@ void cisco_feature_events_mac_harvest_on_rx_request(pjsip_rx_data *rdata)
 	parse_reason_header(msg, &info);
 
 	cisco_mac_register(&info);
+	ast_log(LOG_NOTICE,
+		"cisco-mac DEBUG harvest: REGISTERED MAC %s -> endpoint '%s' "
+		"src_host=%s ttl=%lds\n",
+		mac, endpoint_id, info.src_host, ttl);
 	ast_debug(2, "cisco-mac-identify: learned MAC %s -> endpoint '%s' "
 		"from %s (ttl %lds, device='%s' active='%s' inactive='%s')\n",
 		mac, endpoint_id, info.src_host, ttl,
@@ -352,29 +366,47 @@ static struct ast_sip_endpoint *cisco_mac_identify(pjsip_rx_data *rdata)
 	struct ast_sip_endpoint *endpoint;
 	struct cisco_endpoint *cisco;
 
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: ENTER rdata=%p\n",
+		(void *) rdata);
 	if (!rdata || !rdata->msg_info.msg
 		|| rdata->msg_info.msg->type != PJSIP_REQUEST_MSG) {
+		ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: rdata/msg/type guard\n");
 		return NULL;
 	}
 	from = rdata->msg_info.from;
 	if (!from || !from->uri
 		|| (!PJSIP_URI_SCHEME_IS_SIP(from->uri)
 			&& !PJSIP_URI_SCHEME_IS_SIPS(from->uri))) {
+		ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: from/uri guard\n");
 		return NULL;
 	}
 	from_uri = pjsip_uri_get_uri(from->uri);
 	if (from_uri->user.slen <= 0) {
+		ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: empty user\n");
 		return NULL;
 	}
 	ast_copy_pj_str(user, &from_uri->user, sizeof(user));
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: from-user=[%s]\n", user);
 	if (cisco_mac_normalize(user, mac)) {
+		ast_log(LOG_NOTICE,
+			"cisco-mac DEBUG identify: user '%s' not a 12-hex MAC\n", user);
 		return NULL;       /* not a 12-hex MAC URI — nothing of ours */
 	}
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: normalized MAC=[%s]\n", mac);
 
 	if (cisco_mac_lookup_by_mac(mac, &info)) {
+		ast_log(LOG_NOTICE,
+			"cisco-mac DEBUG identify: MAC %s NOT in cisco_mac_map\n", mac);
 		return NULL;
 	}
+	ast_log(LOG_NOTICE,
+		"cisco-mac DEBUG identify: MAC %s -> endpoint '%s' src_host=%s "
+		"(rdata pkt src=%s)\n",
+		mac, info.endpoint_id, info.src_host, rdata->pkt_info.src_name);
 	if (strcmp(info.src_host, rdata->pkt_info.src_name)) {
+		ast_log(LOG_NOTICE,
+			"cisco-mac DEBUG identify: src_host MISMATCH (%s != %s)\n",
+			info.src_host, rdata->pkt_info.src_name);
 		ast_debug(2, "cisco-mac-identify: MAC %s learned from %s but request "
 			"arrived from %s — not matching\n",
 			mac, info.src_host, rdata->pkt_info.src_name);
@@ -388,11 +420,16 @@ static struct ast_sip_endpoint *cisco_mac_identify(pjsip_rx_data *rdata)
 	}
 	cisco = cisco_endpoint_get(info.endpoint_id);
 	if (!cisco) {
+		ast_log(LOG_NOTICE,
+			"cisco-mac DEBUG identify: cisco_endpoint_get('%s')=NULL\n",
+			info.endpoint_id);
 		ao2_cleanup(endpoint);
 		return NULL;
 	}
 	ao2_cleanup(cisco);
 
+	ast_log(LOG_NOTICE, "cisco-mac DEBUG identify: MATCHED endpoint '%s'\n",
+		info.endpoint_id);
 	ast_debug(2, "cisco-mac-identify: %.*s from MAC %s identified as "
 		"endpoint '%s'\n",
 		(int) rdata->msg_info.msg->line.req.method.name.slen,
