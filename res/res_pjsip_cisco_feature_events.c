@@ -207,9 +207,12 @@ static pj_bool_t subscribe_expires_clamp_on_rx_request(pjsip_rx_data *rdata)
  * we wouldn't want clamp to mutate the request first). */
 static pj_bool_t cisco_feature_events_on_rx_request(pjsip_rx_data *rdata)
 {
-	/* DEBUG: temporary trace to confirm dispatch on every inbound
-	 * request — drop before merging once the dnd_publish 489 is
-	 * diagnosed. */
+	/* UNCONDITIONAL ENTRY LOG — fires for absolutely every inbound
+	 * request that reaches us. If this is missing from full.log,
+	 * pjsip isn't dispatching to our hook at all. */
+	ast_log(LOG_NOTICE, "cisco-feature-events DEBUG-ENTRY: called rdata=%p\n",
+		(void *) rdata);
+
 	if (rdata && rdata->msg_info.msg
 		&& rdata->msg_info.msg->type == PJSIP_REQUEST_MSG) {
 		pj_str_t method = rdata->msg_info.msg->line.req.method.name;
@@ -223,7 +226,7 @@ static pj_bool_t cisco_feature_events_on_rx_request(pjsip_rx_data *rdata)
 			ast_copy_pj_str(ev, &event_hdr->hvalue, sizeof(ev));
 		}
 		ast_log(LOG_NOTICE,
-			"cisco-feature-events DEBUG: on_rx_request method=%.*s event=%s\n",
+			"cisco-feature-events DEBUG: method=%.*s event=%s\n",
 			(int) method.slen, method.ptr, ev);
 	}
 
@@ -240,7 +243,11 @@ static pj_bool_t cisco_feature_events_on_rx_request(pjsip_rx_data *rdata)
 static pjsip_module cisco_feature_events_module = {
 	.name             = { "cisco-feature-events", 20 },
 	.id               = -1,
-	.priority         = PJSIP_MOD_PRIORITY_APPLICATION - 1,
+	/* DEBUG: ridiculously high priority (low number) to bypass any
+	 * other module that might be consuming inbound requests before
+	 * us. APPLICATION-1 was the production setting; reset before
+	 * merging. */
+	.priority         = PJSIP_MOD_PRIORITY_TSX_LAYER + 1,
 	.on_rx_request    = cisco_feature_events_on_rx_request,
 };
 
