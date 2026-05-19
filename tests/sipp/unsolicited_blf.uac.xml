@@ -29,11 +29,18 @@
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
       Contact: <sip:1010@127.0.0.1:__SIPP_CONTACT_PORT__;transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddeeff>"
+      Reason: SIP;cause=200;text="DeviceName=SEPAABBCCDDEEFF; ActiveLoadId=sip8865.12-1-1-12; InactiveLoadId=sip8865.cert-2014"
       Expires: 3600
       Content-Length: 0
 
     ]]>
   </send>
+
+  <!-- Reason header on every REGISTER matches real Cisco firmware
+       behaviour. Without it, the harvest's parse_reason_header()
+       clears Device/Active/Inactive load fields back to empty,
+       overwriting whatever a prior register_optionsind scenario
+       harvested for the same endpoint. -->
 
   <recv response="401" auth="true">
   </recv>
