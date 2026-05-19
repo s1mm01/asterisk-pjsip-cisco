@@ -55,17 +55,25 @@ static struct ast_sip_endpoint *cisco_authorization_identify(pjsip_rx_data *rdat
 	struct ast_sip_endpoint *endpoint;
 	struct cisco_endpoint *cisco;
 	char username[128];
-	pj_str_t method = { NULL, 0 };
-
-	if (rdata && rdata->msg_info.msg
-		&& rdata->msg_info.msg->type == PJSIP_REQUEST_MSG) {
-		method = rdata->msg_info.msg->line.req.method.name;
-	}
-	ast_log(LOG_NOTICE, "cisco_auth DEBUG: called for method=%.*s\n",
-		(int) method.slen, method.ptr ? method.ptr : "");
-
-	if (!rdata || !rdata->msg_info.msg) {
+	ast_log(LOG_NOTICE, "cisco_auth DEBUG: ENTER rdata=%p\n", (void *) rdata);
+	if (!rdata) {
+		ast_log(LOG_NOTICE, "cisco_auth DEBUG: rdata is NULL\n");
 		return NULL;
+	}
+	ast_log(LOG_NOTICE, "cisco_auth DEBUG: msg=%p\n",
+		(void *) rdata->msg_info.msg);
+	if (!rdata->msg_info.msg) {
+		ast_log(LOG_NOTICE, "cisco_auth DEBUG: msg is NULL\n");
+		return NULL;
+	}
+	ast_log(LOG_NOTICE, "cisco_auth DEBUG: msg->type=%d (REQUEST=%d)\n",
+		(int) rdata->msg_info.msg->type, (int) PJSIP_REQUEST_MSG);
+	if (rdata->msg_info.msg->type == PJSIP_REQUEST_MSG) {
+		pj_str_t m = rdata->msg_info.msg->line.req.method.name;
+		ast_log(LOG_NOTICE, "cisco_auth DEBUG: method.slen=%ld method.ptr=%p\n",
+			(long) m.slen, (void *) m.ptr);
+		ast_log(LOG_NOTICE, "cisco_auth DEBUG: method=[%.*s]\n",
+			(int) m.slen, m.ptr ? m.ptr : "(null-ptr)");
 	}
 
 	auth_hdr = (pjsip_authorization_hdr *) pjsip_msg_find_hdr(
