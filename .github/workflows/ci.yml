@@ -470,11 +470,10 @@ jobs:
           # 20.x, which is what gates our on_rx_request hooks. The SDP
           # struct drift only affects cisco_call_extras/video.c, which
           # the SIPp scenarios don't exercise.
-          if [ ! -f "$SRC/third-party/pjproject/patches/config_site.h" ]; then
-            echo "Seeding patches/ from asterisk-src (Debian source omits them)"
+          if ! ls "$SRC/third-party/pjproject/patches/"*.h >/dev/null 2>&1; then
+            echo "Seeding patches/*.h from asterisk-src (Debian source omits them)"
             mkdir -p "$SRC/third-party/pjproject/patches"
-            cp -v asterisk-src/third-party/pjproject/patches/config_site.h \
-                  asterisk-src/third-party/pjproject/patches/asterisk_malloc_debug.h \
+            cp -v asterisk-src/third-party/pjproject/patches/*.h \
                   "$SRC/third-party/pjproject/patches/"
           fi
 

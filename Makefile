@@ -193,14 +193,17 @@ endif
 ifneq ($(strip $(ASTERISK_SRC_DIR)),)
 ASTERISK_PJ_PATCHES_DIR := $(ASTERISK_SRC_DIR)/third-party/pjproject/patches
 ASTERISK_PJ_SOURCE_DIR  := $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib/include/pj
-ASTERISK_PJ_PATCH_HDRS  := config_site.h asterisk_malloc_debug.h
 
-# Only include patches that actually exist in this asterisk source tree
-# (older asterisks may ship a different set).
+# Apply every .h overlay asterisk ships in third-party/pjproject/patches/
+# — typically config_site.h and asterisk_malloc_debug.h, but discover
+# the set rather than enumerate it so an asterisk that adds another
+# overlay header gets picked up automatically. Mirrors asterisk's own
+# pattern rule (third-party/pjproject/Makefile):
+#
+#   source/pjlib/include/pj/%.h: patches/%.h
 ASTERISK_PJ_APPLIED_PATCHES := \
-    $(foreach h,$(ASTERISK_PJ_PATCH_HDRS),\
-        $(if $(wildcard $(ASTERISK_PJ_PATCHES_DIR)/$(h)),\
-            $(ASTERISK_PJ_SOURCE_DIR)/$(h)))
+    $(patsubst $(ASTERISK_PJ_PATCHES_DIR)/%,$(ASTERISK_PJ_SOURCE_DIR)/%,\
+        $(wildcard $(ASTERISK_PJ_PATCHES_DIR)/*.h))
 
 $(ASTERISK_PJ_SOURCE_DIR)/%.h: $(ASTERISK_PJ_PATCHES_DIR)/%.h
 	cp -f $< $@
