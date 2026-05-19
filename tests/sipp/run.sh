@@ -90,6 +90,18 @@ run_scenario() {
     echo "  sipp local: 0.0.0.0:$SIPP_LOCAL_PORT"
     echo
 
+    # Pre-scenario state dump — useful for understanding whether
+    # prior scenarios populated the cisco_mac map before this one
+    # runs (PATH C MAC identifier needs prior REGISTER harvest).
+    case "$name" in
+        dnd_publish)
+            echo "--- pjsip cisco status 1050 (pre-scenario) ---"
+            sudo asterisk -rx 'pjsip cisco status 1050' 2>&1 | head -25
+            echo "--- (end pre-scenario state) ---"
+            echo
+            ;;
+    esac
+
     timeout 60s sipp \
         -sf "$scenario" \
         -m 1 \
