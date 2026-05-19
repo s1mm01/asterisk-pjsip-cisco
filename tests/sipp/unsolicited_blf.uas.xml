@@ -13,26 +13,27 @@
     * cisco-unsolicited-blf: one Event: presence NOTIFY per entry in
       1010's subscribe= list — 1030 and 1050, so two NOTIFYs.
 
-  Order across the three tasks is non-deterministic — they run on
-  separate serializer threads and asterisk schedules them
-  independently. SIPp 3.7 can't express "any of N methods in any
-  order" cleanly (a mandatory <recv request="X"> aborts the call if
-  any other method arrives), so this scenario takes a different
-  shape: each inbound is treated as its own call (-m 3 in run.sh).
-  A single recv-send pair handles whichever request arrives; the
-  action regex asserts it's a Cisco-shaped request.
-
-  Per-message assertions (whichever message arrived):
-    * Method is REFER or NOTIFY.
-    * Cisco marker visible — `X-cisco-sis-*` header (asterisk's
-      Supported list) or `urn:cisco:*` namespace in the body.
+  Order is non-deterministic. SIPp 3.7's <recv> requires a method to
+  match anything, so we can't write "match either REFER or NOTIFY".
+  Workaround: optional REFER recv slots in every gap, immediately
+  followed by mandatory NOTIFY recvs as anchors. NO <send> after
+  the optional REFERs — SIPp 3.7 rejects "optional recv → send"
+  without a preceding mandatory anchor. We just consume the REFER
+  silently; the asterisk-side transaction times out but doesn't
+  fail this scenario. The REFER content is asserted by the
+  dedicated bulkupdate_refer scenario instead.
 -->
 <scenario name="cisco_unsolicited_blf_uas">
 
-  <recv>
+  <!-- Slot 1: optional REFER before first NOTIFY (no ACK; consumed silently). -->
+  <recv request="REFER" optional="true" crlf="true"/>
+
+  <!-- Slot 2: first mandatory NOTIFY. -->
+  <recv request="NOTIFY" crlf="true">
     <action>
-      <ereg regexp="^(REFER|NOTIFY) "                   search_in="msg" check_it="true" assign_to="method"/>
-      <ereg regexp="X-cisco-sis|urn:cisco:params"        search_in="msg" check_it="true" assign_to="cisco_marker"/>
+      <ereg regexp="Event: *presence"                   search_in="msg" check_it="true" assign_to="evt_hdr_1"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"   search_in="msg" check_it="true" assign_to="cisco_ns_1"/>
+      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;"  search_in="msg" check_it="true" assign_to="target_1"/>
     </action>
   </recv>
 
@@ -45,12 +46,41 @@
       [last_To:]
       [last_Call-ID:]
       [last_CSeq:]
-      Refer-Sub: false
-      X-Test-Asserts: [$method] [$cisco_marker]
+      X-Test-Asserts: [$evt_hdr_1] [$cisco_ns_1] [$target_1]
       Content-Length: 0
 
     ]]>
   </send>
+
+  <!-- Slot 4: optional REFER between NOTIFYs. -->
+  <recv request="REFER" optional="true" crlf="true"/>
+
+  <!-- Slot 5: second mandatory NOTIFY. -->
+  <recv request="NOTIFY" crlf="true">
+    <action>
+      <ereg regexp="Event: *presence"                   search_in="msg" check_it="true" assign_to="evt_hdr_2"/>
+      <ereg regexp="urn:cisco:params:xml:ns:pidf:rpid"   search_in="msg" check_it="true" assign_to="cisco_ns_2"/>
+      <ereg regexp="&lt;tuple id=&quot;10(30|50)&quot;"  search_in="msg" check_it="true" assign_to="target_2"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      X-Test-Asserts: [$evt_hdr_2] [$cisco_ns_2] [$target_2]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Slot 7: optional REFER after last NOTIFY. -->
+  <recv request="REFER" optional="true" crlf="true"/>
 
   <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
   <CallLengthRepartition value="10, 50, 100, 500, 1000"/>

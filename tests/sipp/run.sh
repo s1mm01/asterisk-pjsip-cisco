@@ -150,18 +150,10 @@ run_paired() {
     local name
     name=$(basename "$uac" .uac.xml)
 
-    # Some paired scenarios expect multiple inbound dialogs from
-    # asterisk's deferred tasks (unsolicited_blf: 1 bulkupdate REFER
-    # + 2 unsolicited NOTIFYs). Per-scenario UAS -m override.
-    local uas_max=1
-    case "$name" in
-        unsolicited_blf) uas_max=3 ;;
-    esac
-
     echo
     echo "=== SIPp paired scenario: $name ==="
     echo "  asterisk:   $ASTERISK_HOST:$ASTERISK_PORT"
-    echo "  sipp UAS:   0.0.0.0:$SIPP_LOCAL_PORT (-m $uas_max)"
+    echo "  sipp UAS:   0.0.0.0:$SIPP_LOCAL_PORT"
     echo "  sipp UAC:   0.0.0.0:$((SIPP_LOCAL_PORT + 1))"
     echo
 
@@ -169,7 +161,7 @@ run_paired() {
     # before the UAC's REGISTER triggers asterisk's deferred task.
     timeout 60s sipp \
         -sf "$uas" \
-        -m "$uas_max" \
+        -m 1 \
         -p "$SIPP_LOCAL_PORT" \
         -t t1 \
         -nostdin \
