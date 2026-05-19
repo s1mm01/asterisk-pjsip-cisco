@@ -1,5 +1,105 @@
 # Changelog
 
+## v0.6.0 — 2026-05-19
+
+Build-mode rename, harvest-preservation fix, and a working CI test
+surface for the on-the-wire Cisco signals. No sorcery-schema change.
+
+### `ASTERISK_SRC_DIR` replaces `PJPROJECT_DIR`
+
+The build variable always pointed at an Asterisk source tree, not a
+pjproject one — the Makefile derived Asterisk headers, the bundled-
+pjproject headers, AND Asterisk's pjproject patch overlay from it.
+Rename `ASTERISK_SRC_DIR` to match. `PJPROJECT_DIR` is kept as a
+deprecated alias that emits a `$(info)` note; existing bench scripts
+and CI invocations continue to work unchanged.
+
+### Makefile auto-applies Asterisk's pjproject patches
+
+Asterisk's `third-party/pjproject/patches/config_site.h` redefines
+several layout-critical pjproject macros: `PJSIP_MAX_PKT_LEN`
+(65535 vs default 2000), `PJSIP_MAX_MODULE` (38 vs 32),
+`PJMEDIA_MAX_SDP_FMT` (varies by version). Those macros size arrays
+*inside* `pjsip_rx_data`, `pjmedia_sdp_media`, and `pjsip_endpoint`.
+
+Building our modules against stock pjproject headers while loading
+them into an Asterisk built *with* the overlay produces struct
+offsets that disagree by tens of kilobytes — every `rdata->msg_info.msg`
+read silently lands at the wrong address and returns NULL. No crash,
+no warning; every `on_rx_request` hook just no-ops.
+
+The Makefile now mirrors Asterisk's own bundled-pjproject pattern
+rule (`source/pjlib/include/pj/%.h: patches/%.h`), so any
+`ASTERISK_SRC_DIR`-mode build is automatically struct-compatible
+with its runtime Asterisk. CLAUDE.md's "header-mismatch trap" essay
+documents the trap and the Debian/Ubuntu `apt source asterisk`
+recipe. Bare `make` or `PJPROJECT_INCLUDE=…` mode prints a loud
+build-time warning explaining the risk.
+
+### `parse_reason_header` preserves device facts on Reason-less REGISTERs
+
+Previously the harvest unconditionally cleared
+`info->device_name` / `active_load` / `inactive_load` before looking
+for a Reason header. A single REGISTER without Reason — or with a
+partial Reason missing one of the tokens — would wipe data harvested
+from an earlier REGISTER for the same device. Real Cisco firmware
+sends Reason on every REGISTER when cisco-usecallmanager mode is
+enabled, but treating a Reason-less REGISTER as "phone forgot its
+identity" was the wrong default.
+
+The harvest now pre-fills device fields from any existing
+`cisco_mac_map` entry before calling `parse_reason_header`, and that
+function only overwrites fields whose token is actually present in
+the new Reason. Net effect:
+
+- Full Reason → fields refreshed as before.
+- No Reason → fields preserved (was: wiped).
+- Partial Reason → present tokens update, absent tokens preserved.
+
+De-registration (Expires: 0 / Contact: *) is unchanged — the whole
+entry is forgotten, not just zeroed.
+
+### CI: SIPp wire-format scenarios for the Cisco signal surface
+
+`tests/sipp/` ships five scenarios that drive `chan_pjsip` through
+the Cisco-specific signal flows over the same TCP-only transport
+the real firmware uses (`127.0.0.1:5160`):
+
+- `register_optionsind` — REGISTER + auth + optionsind body
+  multipart assertion + Reason-header harvest (Device name +
+  ActiveLoad + InactiveLoad).
+- `dnd_publish` — REGISTER then PUBLISH from MAC-shaped From URI;
+  exercises PATH C `cisco_mac_identify` end-to-end and asserts
+  `DND/<endpoint>` lands in astdb.
+- `subscribe_presence` — SUBSCRIBE Event: presence + initial NOTIFY,
+  Cisco-flavoured PIDF body shape asserted.
+- `bulkupdate_refer` (paired UAC+UAS) — multi-line bulkupdate REFER
+  body shape asserted, with the `aliases=` cross-reference walk.
+- `unsolicited_blf` (SIPp UAC + Python collector) — REGISTER from
+  1010 triggers asterisk's post-REGISTER REFER + N unsolicited
+  NOTIFYs in non-deterministic order. SIPp 3.7 can't model that
+  cleanly, so a 200-line Python TCP collector handles the UAS half.
+
+Per-scenario port allocation (`SIPP_BASE_PORT` + `SIPP_PORT_STRIDE`
+default 10) keeps late-firing REFER/NOTIFY traffic from one
+scenario from contaminating the next scenario's listener. SIPp
+scenarios use a `__SIPP_CONTACT_PORT__` placeholder that `run.sh`
+renders at run time. Cross-scenario side-effect assertions cover
+the harvest map and astdb feature state.
+
+The Python collector (`tests/sipp/collect_unsolicited_blf.py`) is
+~200 lines, dependency-free; parses SIP, ACKs with 200 OK, asserts
+NOTIFY content (Event: presence, Cisco RPID namespace, tuple ids).
+
+### `tests/ci/pjsip.conf` exercises every documented `type=cisco` field
+
+Five endpoints (1010, 1030–1032, 1050) configured against a
+TCP-only transport, set up to exercise every documented `type=cisco`
+field with at least one non-default value: `line_index`, `subscribe`,
+`aliases`, `dnd_busy`, `parkext`, `keep_conference`,
+`subscribe_context`. Sorcery type registration + field validation
+now runs against real config in every CI run.
+
 ## v0.5.1 — 2026-05-18
 
 Follow-ups to v0.5.0. Three focused improvements; no API or

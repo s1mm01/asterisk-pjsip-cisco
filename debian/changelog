@@ -1,3 +1,35 @@
+asterisk-pjsip-cisco (0.6.0-1) unstable; urgency=medium
+
+  * Build mode: ASTERISK_SRC_DIR replaces PJPROJECT_DIR (the
+    variable always pointed at an Asterisk source tree, not a
+    pjproject one). PJPROJECT_DIR is kept as a deprecated alias.
+  * Makefile: ASTERISK_SRC_DIR-mode builds now auto-apply Asterisk's
+    third-party/pjproject/patches/config_site.h overlay, mirroring
+    Asterisk's own bundled-pjproject pattern rule. Without this,
+    stock pjproject's struct layouts disagree with the runtime
+    binary's by tens of kilobytes; on_rx_request hooks silently
+    read NULL msg pointers. Bare make or PJPROJECT_INCLUDE-only
+    mode prints a build-time warning. See CLAUDE.md
+    "header-mismatch trap".
+  * cisco_feature_events: parse_reason_header preserves the
+    device_name / active_load / inactive_load fields when the new
+    REGISTER's Reason header is absent or carries only a subset
+    of the tokens. Previously a Reason-less REGISTER wiped
+    previously-harvested facts. De-registration semantics
+    unchanged.
+  * ci: SIPp wire-format scenarios under tests/sipp/ exercise the
+    on-the-wire Cisco signal surface end to end against the apt
+    asterisk binary — register_optionsind, dnd_publish (PATH C),
+    subscribe_presence, bulkupdate_refer, and unsolicited_blf
+    (SIPp UAC + Python collector for the multi-method-any-order
+    UAS half). Cross-scenario side-effect assertions cover the
+    harvest map and astdb feature state.
+  * ci: tests/ci/pjsip.conf — five-endpoint test fixture with
+    every documented type=cisco field exercised at least once
+    with a non-default value.
+
+ -- Andrew Simmonds <simmo@rinseout.org>  Tue, 19 May 2026 16:00:00 +0800
+
 asterisk-pjsip-cisco (0.5.1-1) unstable; urgency=medium
 
   * pjsip cisco status: device facts (MAC, source host, device
