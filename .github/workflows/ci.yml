@@ -331,23 +331,32 @@ jobs:
       # history for the deliberation.
       # ----------------------------------------------------------
 
-      - name: detect apt asterisk major version
+      - name: detect apt asterisk version
         id: apt_asterisk
         run: |
           # apt-cache madison emits e.g. "asterisk | 1:20.6.0~dfsg+~cs6.13.40431414-1 | ..."
           # — the third field is the Debian version; strip the epoch
-          # (everything before ':'), then take the major component.
-          APT_VER=$(apt-cache madison asterisk 2>/dev/null \
+          # (everything before ':'), then split into major + full upstream
+          # tag (e.g. "20.6.0"). The full version drives our apt-matching
+          # pjproject fetch below; CLAUDE.md's "header-mismatch trap"
+          # bites hard if we pjproject-pin against the wrong asterisk tag.
+          APT_DEB=$(apt-cache madison asterisk 2>/dev/null \
                       | head -1 \
                       | awk -F'|' '{print $2}' \
-                      | sed 's/^[[:space:]]*//;s/^[0-9]*://' \
-                      | cut -d. -f1)
-          if [ -z "$APT_VER" ]; then
-            APT_VER="(none)"
+                      | sed 's/^[[:space:]]*//;s/^[0-9]*://')
+          # "20.6.0~dfsg+~cs..." → "20.6.0"
+          APT_FULL=$(echo "$APT_DEB" | sed 's/~.*//;s/-.*//')
+          APT_MAJOR=$(echo "$APT_FULL" | cut -d. -f1)
+          if [ -z "$APT_MAJOR" ]; then
+            APT_MAJOR="(none)"
+            APT_FULL="(none)"
           fi
-          echo "apt asterisk major version: $APT_VER"
-          echo "matrix asterisk branch:     ${{ matrix.asterisk_branch }}"
-          echo "major=$APT_VER" >> "$GITHUB_OUTPUT"
+          echo "apt asterisk Debian version: $APT_DEB"
+          echo "apt asterisk upstream tag:   $APT_FULL"
+          echo "apt asterisk major version:  $APT_MAJOR"
+          echo "matrix asterisk branch:      ${{ matrix.asterisk_branch }}"
+          echo "major=$APT_MAJOR" >> "$GITHUB_OUTPUT"
+          echo "full=$APT_FULL" >> "$GITHUB_OUTPUT"
 
       - name: install asterisk runtime + headers from apt
         # asterisk + asterisk-modules: the daemon and its PJSIP
@@ -364,10 +373,15 @@ jobs:
         #
         # Note: pjproject has no -dev package on Debian/Ubuntu —
         # asterisk bundles pjproject statically into res_pjsip.so.
-        # We reuse the pjproject headers fetched earlier in the
-        # workflow; pjproject ABI is stable enough across minor
-        # versions that the latest-pin we resolved is compatible
-        # with whatever apt's asterisk was built against.
+        # We need a *separate* pjproject header set matching the
+        # exact upstream version apt's asterisk binary bundles (the
+        # "fetch pjproject matching apt asterisk" step below). The
+        # earlier latest-tag fetch is fine for the build-against-
+        # upstream check but is silently ABI-incompatible at runtime
+        # whenever the latest-tag bumped pjproject vs apt's frozen
+        # bundle (asterisk 20.6 ships pjproject 2.14 but 20.15+
+        # bumped to 2.16; struct offsets shift and rdata->msg_info.msg
+        # ends up reading the wrong field).
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           sudo apt-get install -y \
@@ -375,9 +389,48 @@ jobs:
             asterisk-dev \
             sip-tester
 
+      - name: fetch pjproject matching apt asterisk's bundled version
+        # CLAUDE.md's "header-mismatch trap" in CI form: apt's
+        # asterisk binary was built with whichever pjproject version
+        # the corresponding upstream tag's third-party/versions.mak
+        # pinned. Building our modules against ANY other pjproject
+        # version produces .so files whose pjsip_rx_data struct
+        # offsets disagree with the binary's. Every on_rx_request
+        # hook then reads rdata->msg_info.msg at the wrong offset
+        # and consistently observes NULL — silent functional break,
+        # no SEGV, no compile warning.
+        #
+        # Resolve via the apt-version's versions.mak (not the
+        # latest-major's). For apt asterisk 20.6.0 this lands on
+        # pjproject 2.14 even though the latest 20.x tag has moved
+        # to 2.16.
+        if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
+        run: |
+          APT_FULL='${{ steps.apt_asterisk.outputs.full }}'
+          wget -q "https://raw.githubusercontent.com/asterisk/asterisk/${APT_FULL}/third-party/versions.mak" \
+              -O apt-versions.mak
+          APT_PJ=$(grep -E '^PJPROJECT_VERSION[[:space:]]*=' apt-versions.mak \
+                     | head -1 | cut -d= -f2 | tr -d ' \t')
+          if [ -z "$APT_PJ" ]; then
+            echo "::error::Could not extract PJPROJECT_VERSION from asterisk ${APT_FULL}'s third-party/versions.mak"
+            exit 1
+          fi
+          echo "apt asterisk ${APT_FULL} bundles pjproject ${APT_PJ}"
+          wget -q "https://github.com/pjsip/pjproject/archive/refs/tags/${APT_PJ}.tar.gz" \
+              -O apt-pjproject.tgz
+          tar xzf apt-pjproject.tgz
+          mv "pjproject-${APT_PJ}" apt-pjproject
+          # Same K&R prototype fix the earlier fetch applies; see
+          # the comment on the "fetch pjproject headers" step for
+          # context.
+          sed -i 's|pj_thread_unregister()|pj_thread_unregister(void)|' \
+              apt-pjproject/pjlib/include/pj/os.h
+          : > apt-pjproject/pjlib/include/pj/config_site.h
+          (cd apt-pjproject && ./configure --disable-libwebrtc-aec >/dev/null)
+
       - name: rebuild + install modules against apt asterisk-dev
         # The earlier `make` step compiled against the resolved
-        # upstream tag (e.g. 20.13.x). That's our compile-time-
+        # upstream tag (e.g. 20.15.x). That's our compile-time-
         # against-latest signal and stays the load-bearing check
         # for ABI breakage in unreleased asterisk changes. But the
         # resulting .so files reference symbols as-named in that
@@ -390,9 +443,9 @@ jobs:
         #
         # Rebuild without PJPROJECT_DIR so the Makefile picks up
         # /usr/include/asterisk from asterisk-dev (matching the
-        # apt binary). PJPROJECT_INCLUDE still points at the
-        # fetched pjproject headers (asterisk-dev does NOT ship
-        # pjproject headers — see `install asterisk runtime`).
+        # apt binary). PJPROJECT_INCLUDE points at the apt-matching
+        # pjproject we fetched in the previous step (NOT the latest-
+        # tag one) — see that step for why this matters.
         #
         # `make clean && make && sudo make install` runs in one
         # step so PJPROJECT_INCLUDE stays in scope for all three
@@ -405,11 +458,11 @@ jobs:
         env:
           PJPROJECT_INCLUDE: >-
             -DPJ_AUTOCONF=1
-            -I${{ github.workspace }}/pjproject/pjlib/include
-            -I${{ github.workspace }}/pjproject/pjlib-util/include
-            -I${{ github.workspace }}/pjproject/pjnath/include
-            -I${{ github.workspace }}/pjproject/pjmedia/include
-            -I${{ github.workspace }}/pjproject/pjsip/include
+            -I${{ github.workspace }}/apt-pjproject/pjlib/include
+            -I${{ github.workspace }}/apt-pjproject/pjlib-util/include
+            -I${{ github.workspace }}/apt-pjproject/pjnath/include
+            -I${{ github.workspace }}/apt-pjproject/pjmedia/include
+            -I${{ github.workspace }}/apt-pjproject/pjsip/include
         run: |
           make clean
           make
