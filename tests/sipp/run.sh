@@ -33,11 +33,18 @@ SIPP_NEXT_PORT="$SIPP_BASE_PORT"
 
 mkdir -p "$SIPP_TRACE_DIR" "$SIPP_RENDER_DIR"
 
+# Advance SIPP_NEXT_PORT and stash the picked port in
+# SIPP_ALLOCATED_PORT for the caller to read.
+#
+# DO NOT change this to `echo "$port"` + `port=$(next_sipp_port)`:
+# $() runs the function in a subshell, the SIPP_NEXT_PORT increment
+# is lost when the subshell exits, and every call returns the same
+# (base) port. Result: scenarios all share one port and the next
+# scenario's listener sees late REFER/NOTIFY traffic from the
+# previous one's REGISTER.
 next_sipp_port() {
-    local port="$SIPP_NEXT_PORT"
-
+    SIPP_ALLOCATED_PORT="$SIPP_NEXT_PORT"
     SIPP_NEXT_PORT=$((SIPP_NEXT_PORT + SIPP_PORT_STRIDE))
-    echo "$port"
 }
 
 render_scenario() {
@@ -118,7 +125,8 @@ run_scenario() {
     local local_port
 
     name=$(basename "$scenario" .xml)
-    local_port=$(next_sipp_port)
+    next_sipp_port
+    local_port="$SIPP_ALLOCATED_PORT"
     assert_no_unrendered_placeholders "$scenario"
 
     echo
@@ -193,7 +201,8 @@ run_paired() {
     local uas_rc
 
     name=$(basename "$uac" .uac.xml)
-    uas_port=$(next_sipp_port)
+    next_sipp_port
+    uas_port="$SIPP_ALLOCATED_PORT"
     uac_port=$((uas_port + 1))
     rendered_uac=$(render_scenario "$uac" "$uas_port")
     rendered_uas=$(render_scenario "$uas" "$uas_port")
@@ -270,7 +279,8 @@ run_unsolicited_blf() {
     local uac_rc
 
     name=$(basename "$uac" .uac.xml)
-    uas_port=$(next_sipp_port)
+    next_sipp_port
+    uas_port="$SIPP_ALLOCATED_PORT"
     uac_port=$((uas_port + 1))
     rendered_uac=$(render_scenario "$uac" "$uas_port")
     assert_no_unrendered_placeholders "$rendered_uac"
