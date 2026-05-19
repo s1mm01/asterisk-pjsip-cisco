@@ -32,20 +32,23 @@ CFLAGS  ?= -O0 -g
 override CFLAGS += -Wall -Werror -Wstrict-prototypes -Wmissing-prototypes \
                    -Wshadow -Wpointer-arith
 
-# Pick up pjproject the same way the top-level Makefile does: pkg-config
-# first, PJPROJECT_DIR second.
+# Pick up pjproject the same way the top-level Makefile does:
+# pkg-config first, ASTERISK_SRC_DIR second. (Legacy callers may set
+# PJPROJECT_DIR; that's the deprecated alias the top-level Makefile
+# rewrites to ASTERISK_SRC_DIR before invoking us, so this Makefile
+# only needs to know the new name.)
 PJPROJECT_CFLAGS := $(shell pkg-config --cflags libpjproject 2>/dev/null)
 ifeq ($(strip $(PJPROJECT_CFLAGS)),)
 PJPROJECT_CFLAGS := $(shell pkg-config --cflags pjproject 2>/dev/null)
 endif
 ifeq ($(strip $(PJPROJECT_CFLAGS)),)
-ifneq ($(strip $(PJPROJECT_DIR)),)
+ifneq ($(strip $(ASTERISK_SRC_DIR)),)
 PJPROJECT_CFLAGS := -DPJ_AUTOCONF=1 \
-                    -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjlib/include \
-                    -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjlib-util/include \
-                    -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjnath/include \
-                    -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjmedia/include \
-                    -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjsip/include
+                    -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib/include \
+                    -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib-util/include \
+                    -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjnath/include \
+                    -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjmedia/include \
+                    -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjsip/include
 endif
 endif
 
@@ -53,25 +56,25 @@ PJPROJECT_LIBS := $(shell pkg-config --libs libpjproject 2>/dev/null)
 ifeq ($(strip $(PJPROJECT_LIBS)),)
 PJPROJECT_LIBS := $(shell pkg-config --libs pjproject 2>/dev/null)
 endif
-# Fall back to bundled static libs under PJPROJECT_DIR if pkg-config
+# Fall back to bundled static libs under ASTERISK_SRC_DIR if pkg-config
 # didn't surface a system pjproject — same path the top-level Makefile
 # pulls headers from when building against an Asterisk source tree.
 # Glob picks up whatever <arch> suffix the build used (e.g.
 # x86_64-pc-linux-gnu vs x86_64-unknown-linux-gnu).
 ifeq ($(strip $(PJPROJECT_LIBS)),)
-ifneq ($(strip $(PJPROJECT_DIR)),)
+ifneq ($(strip $(ASTERISK_SRC_DIR)),)
 PJPROJECT_LIBS := \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjsip/lib/libpjsua-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjsip/lib/libpjsip-ua-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjsip/lib/libpjsip-simple-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjsip/lib/libpjsip-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-codec-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-videodev-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-audiodev-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjnath/lib/libpjnath-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjlib-util/lib/libpjlib-util-*.a) \
-    $(wildcard $(PJPROJECT_DIR)/third-party/pjproject/source/pjlib/lib/libpj-*.a)
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjsip/lib/libpjsua-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjsip/lib/libpjsip-ua-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjsip/lib/libpjsip-simple-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjsip/lib/libpjsip-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-codec-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-videodev-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-audiodev-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjmedia/lib/libpjmedia-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjnath/lib/libpjnath-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib-util/lib/libpjlib-util-*.a) \
+    $(wildcard $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib/lib/libpj-*.a)
 endif
 endif
 

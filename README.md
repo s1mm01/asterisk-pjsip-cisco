@@ -109,17 +109,24 @@ latest Asterisk 20.x, 22.x and 23.x release tags.
 ```sh
 git clone https://github.com/s1mm01/asterisk-pjsip-cisco
 cd asterisk-pjsip-cisco
-make PJPROJECT_DIR=/path/to/asterisk-22.9.0
+make ASTERISK_SRC_DIR=/path/to/asterisk-22.9.0
 sudo make install
 sudo systemctl restart asterisk
 asterisk -rx 'module show like cisco_'   # expect ten modules Running
 ```
 
-`PJPROJECT_DIR` pulls both Asterisk and bundled-pjproject headers from
-one source tree so struct layouts stay in lockstep with the running
-binary. If you only have `asterisk-dev` plus a separately unpacked
-pjproject, see the Makefile header comment for the `PJPROJECT_INCLUDE=...`
-alternative.
+`ASTERISK_SRC_DIR` pulls Asterisk headers, the bundled-pjproject
+headers, AND asterisk's pjproject patch overlay (`config_site.h`)
+from one source tree, so struct layouts stay in lockstep with the
+running binary. This is the only mode that's reliably correct — see
+the "header-mismatch trap" section in CLAUDE.md for why. (`PJPROJECT_DIR`
+is the deprecated legacy alias.)
+
+If you only have `asterisk-dev` plus a separately unpacked pjproject,
+see the Makefile header comment for the `PJPROJECT_INCLUDE=...`
+alternative — but be aware that mode produces struct offsets that
+disagree with apt asterisk's binary; the modules will load but
+on_rx_request hooks no-op silently.
 
 A harmless WARNING - `A body generator for application/cpim-pidf+xml is
 already registered` - is expected at startup. That is stock

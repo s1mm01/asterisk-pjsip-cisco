@@ -14,7 +14,7 @@ This repository builds out-of-tree Asterisk `res_pjsip_cisco_*` shared modules f
 
 ## Build, Test, and Development Commands
 
-- `make` builds all modules into `$(MODULE_BUILD_DIR)` and regenerates the XML documentation at `$(DOC_XML)` (defaults: `obj/` and `obj/doc/res_pjsip_cisco-en_US.xml`). `make doc` regenerates only the XML. Use `PJPROJECT_DIR=/path/to/asterisk-src` when building against a source-built Asterisk.
+- `make` builds all modules into `$(MODULE_BUILD_DIR)` and regenerates the XML documentation at `$(DOC_XML)` (defaults: `obj/` and `obj/doc/res_pjsip_cisco-en_US.xml`). `make doc` regenerates only the XML. Use `ASTERISK_SRC_DIR=/path/to/asterisk-src` when building against a source-built Asterisk (recommended; auto-applies asterisk's pjproject patch overlay). `PJPROJECT_DIR` is the deprecated legacy alias.
 - `make clean` removes the `$(OBJ_DIR)` tree (objects, `.so` files, generated XML — everything `make` produced).
 - Output-path overrides chain through a single root: `OBJ_DIR` is the overall build root; `MODULE_BUILD_DIR` defaults to `$(OBJ_DIR)` and holds the `.o`/`.so` files; `DOC_BUILD_DIR` defaults to `$(OBJ_DIR)/doc` and holds the XML; `DOC_XML` defaults to `$(DOC_BUILD_DIR)/res_pjsip_cisco-en_US.xml`. Set just `OBJ_DIR` to relocate everything together, or override any of the lower-level vars independently (distro packaging that wants modules and docs in different `dh_install` prefixes).
 - `sudo make install` installs modules, docs, and sample config.

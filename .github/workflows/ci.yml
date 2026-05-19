@@ -210,7 +210,7 @@ jobs:
 
       - name: build
         env:
-          # Pjproject header set we just unpacked. PJPROJECT_DIR
+          # Pjproject header set we just unpacked. ASTERISK_SRC_DIR
           # below points the Makefile at asterisk-src/include for
           # asterisk headers (the only safe way to ensure struct
           # layouts match - asterisk-dev from apt is frequently
@@ -222,7 +222,7 @@ jobs:
             -I${{ github.workspace }}/pjproject/pjnath/include
             -I${{ github.workspace }}/pjproject/pjmedia/include
             -I${{ github.workspace }}/pjproject/pjsip/include
-        run: make PJPROJECT_DIR=${{ github.workspace }}/asterisk-src
+        run: make ASTERISK_SRC_DIR=${{ github.workspace }}/asterisk-src
 
       - name: verify .so files produced
         run: |
@@ -283,13 +283,13 @@ jobs:
             -I${{ github.workspace }}/pjproject/pjnath/include
             -I${{ github.workspace }}/pjproject/pjmedia/include
             -I${{ github.workspace }}/pjproject/pjsip/include
-          PJPROJECT_DIR: ${{ github.workspace }}/asterisk-src
+          ASTERISK_SRC_DIR: ${{ github.workspace }}/asterisk-src
         run: |
           # CI builds against a downloaded asterisk source tree, not the
           # apt asterisk-dev package, so the .deb's Build-Depends
           # (asterisk-dev) isn't installed here. -d skips the dependency
           # check; we only verify the packaging metadata is well-formed
-          # and dpkg-buildpackage produces a .deb. PJPROJECT_DIR /
+          # and dpkg-buildpackage produces a .deb. ASTERISK_SRC_DIR /
           # PJPROJECT_INCLUDE flow through the env into debian/rules ->
           # dh -> our Makefile.
           sudo apt-get install -y devscripts debhelper
@@ -389,10 +389,10 @@ jobs:
             asterisk-dev \
             sip-tester
 
-      - name: prepare apt asterisk source tree for PJPROJECT_DIR
+      - name: prepare apt asterisk source tree for ASTERISK_SRC_DIR
         # `apt source asterisk` pulls the *exact* source tarballs
         # Debian used to build the apt binary. Combined with
-        # PJPROJECT_DIR mode + the Makefile's auto-application of
+        # ASTERISK_SRC_DIR mode + the Makefile's auto-application of
         # asterisk's third-party/pjproject/patches/config_site.h,
         # this gives our rebuild the same pjsip / pjmedia struct
         # layouts the apt binary was compiled with — required by
@@ -422,7 +422,7 @@ jobs:
 
           # Debian splits pjproject into a separate orig-Xpjproject.tar.xz
           # which dpkg-source extracts to $SRC/Xpjproject. Our Makefile's
-          # PJPROJECT_DIR mode (and asterisk's own build) expects pjproject
+          # ASTERISK_SRC_DIR mode (and asterisk's own build) expects pjproject
           # at $SRC/third-party/pjproject/source. Move it into place.
           PJSRC=$(find "$SRC" -maxdepth 4 -type d -name pjlib | head -1)
           if [ -z "$PJSRC" ]; then
@@ -451,8 +451,35 @@ jobs:
           : > "$PJ_SOURCE/pjlib/include/pj/config_site.h"
           (cd "$PJ_SOURCE" && ./configure --disable-libwebrtc-aec >/dev/null)
 
+          # Diagnostic: list what's in third-party/pjproject/ so we can
+          # see whether Debian's ~dfsg repackaging stripped the patches/
+          # subdir (it shouldn't — those files are GPL-2 — but verify).
+          echo "--- $SRC/third-party/pjproject/ ---"
+          ls -la "$SRC/third-party/pjproject/" || true
+          echo "--- $SRC/third-party/pjproject/patches/ (if exists) ---"
+          ls -la "$SRC/third-party/pjproject/patches/" 2>/dev/null || \
+              echo "(patches/ subdir missing from Debian source)"
+
+          # Fallback: if Debian's source omits asterisk's pjproject
+          # patches/ overlay, seed it from the upstream-tag asterisk-src
+          # tree we downloaded earlier in the workflow. The latest 20.x
+          # tag's config_site.h has minor field drift from 20.6's
+          # (PJMEDIA_MAX_SDP_FMT bumped 64→72, PJ_MAX_SOCKOPT_PARAMS
+          # added) — but the pjsip_rx_data critical macros
+          # (PJSIP_MAX_PKT_LEN, PJSIP_MAX_MODULE) are stable across
+          # 20.x, which is what gates our on_rx_request hooks. The SDP
+          # struct drift only affects cisco_call_extras/video.c, which
+          # the SIPp scenarios don't exercise.
+          if [ ! -f "$SRC/third-party/pjproject/patches/config_site.h" ]; then
+            echo "Seeding patches/ from asterisk-src (Debian source omits them)"
+            mkdir -p "$SRC/third-party/pjproject/patches"
+            cp -v asterisk-src/third-party/pjproject/patches/config_site.h \
+                  asterisk-src/third-party/pjproject/patches/asterisk_malloc_debug.h \
+                  "$SRC/third-party/pjproject/patches/"
+          fi
+
       - name: rebuild + install modules against apt asterisk-dev
-        # Re-build with PJPROJECT_DIR pointing at the apt asterisk
+        # Re-build with ASTERISK_SRC_DIR pointing at the apt asterisk
         # source tree. Three things flow from that:
         #
         # 1. pjsip headers come from $APT_ASTERISK_SRC/third-party/
@@ -468,16 +495,16 @@ jobs:
         #    ast_sip_push_task → __ast_sip_push_task.
         #
         # `make clean && make && sudo make install` runs together so
-        # PJPROJECT_DIR stays in scope through all three (sudo
+        # ASTERISK_SRC_DIR stays in scope through all three (sudo
         # --preserve-env carries it through `sudo make install`).
         # ASTERISK_MODULES_DIR / ASTERISK_DOC_DIR auto-resolve from
         # /etc/asterisk/asterisk.conf via the Makefile.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
           make clean
-          make PJPROJECT_DIR="$APT_ASTERISK_SRC"
+          make ASTERISK_SRC_DIR="$APT_ASTERISK_SRC"
           sudo --preserve-env=APT_ASTERISK_SRC \
-              make install PJPROJECT_DIR="$APT_ASTERISK_SRC"
+              make install ASTERISK_SRC_DIR="$APT_ASTERISK_SRC"
 
       - name: install test pjsip.conf + extensions.conf
         # Drop in a known-good pjsip.conf with a spread of [type=cisco]

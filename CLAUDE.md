@@ -20,9 +20,11 @@ dpkg-buildpackage -us -uc -b -d   # Debian packaging (-d skips Build-Depends not
 
 Header sourcing — pick **one** of these when invoking `make`:
 
-- `make PJPROJECT_DIR=/path/to/asterisk-22.9.0` — points at an Asterisk source tree; the Makefile derives both Asterisk headers (`<src>/include/`) and bundled pjproject headers (`<src>/third-party/pjproject/source/...`) from it. **Preferred when Asterisk is self-built.**
-- `make PJPROJECT_INCLUDE="-DPJ_AUTOCONF=1 -I.../pjlib/include ..."` — pin pjproject headers manually; Asterisk headers come from `/usr/include` (asterisk-dev).
-- Bare `make` — uses `pkg-config libpjproject` and asterisk-dev. Only safe when both are in lockstep with the running asterisk binary.
+- `make ASTERISK_SRC_DIR=/path/to/asterisk-22.9.0` — points at an Asterisk source tree; the Makefile derives Asterisk headers (`<src>/include/`), bundled pjproject headers (`<src>/third-party/pjproject/source/…`), AND auto-applies asterisk's pjproject patch overlay (`<src>/third-party/pjproject/patches/config_site.h`) from it. **Strongly preferred — the only mode that guarantees struct compatibility with the runtime asterisk.** See the header-mismatch-trap section below for why.
+- `make PJPROJECT_INCLUDE="-DPJ_AUTOCONF=1 -I.../pjlib/include …"` — pin pjproject headers manually; Asterisk headers come from `/usr/include` (asterisk-dev). The Makefile prints a build-time warning that struct layouts may not match the runtime asterisk.
+- Bare `make` — uses `pkg-config libpjproject` and asterisk-dev. Only safe when both are in lockstep with the running asterisk binary. Same warning fires.
+
+`PJPROJECT_DIR` is the deprecated legacy name for `ASTERISK_SRC_DIR` (the variable always pointed at an asterisk source tree, not a pjproject one). It still works but emits a deprecation note.
 
 The `check-headers` target is a sanity gate; it fails fast if neither path resolves.
 `OBJ_DIR` defaults to `obj`; `MODULE_BUILD_DIR` and `DOC_XML` derive from it unless explicitly overridden.
@@ -31,13 +33,13 @@ There is **no unit-test framework**. CI (`.github/workflows/ci.yml`) builds agai
 
 ## The header-mismatch trap (read before changing struct field access)
 
-Any code that touches `struct ast_sip_endpoint` (or other PJSIP structs) deeper than its first few fields must be compiled against the **exact same headers** the running asterisk binary was built with. `asterisk-dev` from apt is frequently stale relative to a self-built asterisk; building against stale headers produces modules that compile cleanly and SEGV at runtime when struct field offsets diverge. This is why `PJPROJECT_DIR` is the recommended build mode — it pins both header sets to the same tree.
+Any code that touches `struct ast_sip_endpoint` (or other PJSIP structs) deeper than its first few fields must be compiled against the **exact same headers** the running asterisk binary was built with. `asterisk-dev` from apt is frequently stale relative to a self-built asterisk; building against stale headers produces modules that compile cleanly and SEGV at runtime when struct field offsets diverge. This is why `ASTERISK_SRC_DIR` is the recommended build mode — it pins both header sets to the same tree.
 
 There is a quieter form of the same trap that bites even when headers and binary nominally agree on pjproject's *version*. Asterisk's bundled pjproject is built with a customised `third-party/pjproject/patches/config_site.h` that redefines several layout-critical macros — most notably `PJSIP_MAX_PKT_LEN` (65535 vs default 2000), `PJSIP_MAX_MODULE` (38 vs 32), and `PJMEDIA_MAX_SDP_FMT` (varies by asterisk version). Those macros size **arrays inside** `pjsip_rx_data`, `pjmedia_sdp_media`, and `pjsip_endpoint`, so they directly shift the offset of every later struct field. Compiling our modules against stock pjproject headers (e.g. an `apt source pjproject`-style tree without the overlay) while loading them into an asterisk built *with* the overlay produces struct offsets that disagree by tens of kilobytes — every `rdata->msg_info.msg` read lands at the wrong address and silently returns NULL. No SEGV, no warning; `on_rx_request` hooks just no-op.
 
-The Makefile's `PJPROJECT_DIR` mode handles this automatically: it overlays `<dir>/third-party/pjproject/patches/config_site.h` onto `<dir>/third-party/pjproject/source/pjlib/include/pj/config_site.h` (and `asterisk_malloc_debug.h` alongside it) as a build prerequisite, mirroring asterisk's own bundled-pjproject Makefile rule. In any other mode the Makefile prints a build-time warning.
+The Makefile's `ASTERISK_SRC_DIR` mode handles this automatically: it overlays `<dir>/third-party/pjproject/patches/config_site.h` onto `<dir>/third-party/pjproject/source/pjlib/include/pj/config_site.h` (and `asterisk_malloc_debug.h` alongside it) as a build prerequisite, mirroring asterisk's own bundled-pjproject Makefile rule. In any other mode the Makefile prints a build-time warning.
 
-For **Debian/Ubuntu apt asterisk** users: `make PJPROJECT_DIR=/usr/include` does **not** work (apt asterisk-dev doesn't ship the bundled pjproject tree). The right invocation is:
+For **Debian/Ubuntu apt asterisk** users: `make ASTERISK_SRC_DIR=/usr/include` does **not** work (apt asterisk-dev doesn't ship the bundled pjproject tree). The right invocation is:
 
 ```sh
 apt source asterisk                              # drops asterisk-X.Y.Z.../ in CWD
@@ -49,10 +51,10 @@ cp -r Xpjproject/. third-party/pjproject/source/
 cd third-party/pjproject/source && ./configure --disable-libwebrtc-aec && cd -
 # Now build the modules against this tree:
 cd /path/to/asterisk-pjsip-cisco
-make PJPROJECT_DIR=/path/to/asterisk-X.Y.Z...
+make ASTERISK_SRC_DIR=/path/to/asterisk-X.Y.Z...
 ```
 
-The CI workflow does exactly this — see the "prepare apt asterisk source tree for PJPROJECT_DIR" step in `.github/workflows/ci.yml`.
+The CI workflow does exactly this — see the "prepare apt asterisk source tree for ASTERISK_SRC_DIR" step in `.github/workflows/ci.yml`.
 
 ## Architecture (the non-obvious bits)
 

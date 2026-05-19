@@ -76,19 +76,40 @@ ASTERISK_SAMPLE_DIR  ?= /usr/share/doc/asterisk-pjsip-cisco
 # code that touches struct ast_sip_endpoint deeper than its first few
 # fields will SEGV at runtime.
 #
+# ASTERISK_SRC_DIR — path to an asterisk source tree (e.g.
+# /path/to/asterisk-22.9.0). When set, the Makefile derives:
+#   * asterisk headers from <dir>/include/asterisk/
+#   * bundled-pjproject headers from <dir>/third-party/pjproject/source/
+#   * asterisk's pjproject patch overlay (config_site.h +
+#     asterisk_malloc_debug.h) from <dir>/third-party/pjproject/patches/
+# all in one go. This is the only mode that guarantees struct
+# compatibility with the runtime asterisk (see CLAUDE.md's
+# "header-mismatch trap" essay).
+#
+# PJPROJECT_DIR is the deprecated name for this variable — kept for
+# backward compatibility with existing scripts. The original name was
+# misleading; it always pointed at an asterisk source tree, not a
+# pjproject one.
+ifeq ($(strip $(ASTERISK_SRC_DIR)),)
+ifneq ($(strip $(PJPROJECT_DIR)),)
+ASTERISK_SRC_DIR := $(PJPROJECT_DIR)
+$(info NOTE: PJPROJECT_DIR is deprecated; use ASTERISK_SRC_DIR (the variable points at an asterisk source tree, not a pjproject one).)
+endif
+endif
+
 # Resolution order:
 #   1. ASTERISK_INCLUDE_DIR explicitly set on the command line.
-#   2. PJPROJECT_DIR's include/ subdir (the source tree's headers,
-#      when PJPROJECT_DIR points at the asterisk source root).
+#   2. ASTERISK_SRC_DIR's include/ subdir (the source tree's headers,
+#      when ASTERISK_SRC_DIR points at the asterisk source root).
 #   3. /usr/include (asterisk-dev package).
 #
 # Distros that build asterisk from source frequently end up with a
 # mismatch between asterisk-dev (stale) and the locally-built binary
-# (current). Pinning to PJPROJECT_DIR/include avoids that trap.
+# (current). Pinning to ASTERISK_SRC_DIR/include avoids that trap.
 ifeq ($(strip $(ASTERISK_INCLUDE_DIR)),)
-ifneq ($(strip $(PJPROJECT_DIR)),)
-ifneq ($(wildcard $(PJPROJECT_DIR)/include/asterisk/res_pjsip.h),)
-ASTERISK_INCLUDE_DIR := $(PJPROJECT_DIR)/include
+ifneq ($(strip $(ASTERISK_SRC_DIR)),)
+ifneq ($(wildcard $(ASTERISK_SRC_DIR)/include/asterisk/res_pjsip.h),)
+ASTERISK_INCLUDE_DIR := $(ASTERISK_SRC_DIR)/include
 endif
 endif
 endif
@@ -116,9 +137,9 @@ DOC_BUILD_DIR        ?= $(OBJ_DIR)/doc
 #   1. pkg-config (Debian's libpjproject-dev provides this)
 #   2. PJPROJECT_INCLUDE override on the command line, e.g.
 #      make PJPROJECT_INCLUDE="-I/path/to/pjproject/source/pjsip/include ..."
-#   3. PJPROJECT_DIR pointing at an Asterisk source tree containing
+#   3. ASTERISK_SRC_DIR pointing at an Asterisk source tree containing
 #      a bundled pjproject under third-party/, e.g.
-#      make PJPROJECT_DIR=/path/to/asterisk-22.9.0
+#      make ASTERISK_SRC_DIR=/path/to/asterisk-22.9.0
 PJPROJECT_CFLAGS     := $(shell pkg-config --cflags libpjproject 2>/dev/null)
 ifeq ($(strip $(PJPROJECT_CFLAGS)),)
 PJPROJECT_CFLAGS     := $(shell pkg-config --cflags pjproject 2>/dev/null)
@@ -129,13 +150,13 @@ PJPROJECT_CFLAGS     := $(PJPROJECT_INCLUDE)
 endif
 endif
 ifeq ($(strip $(PJPROJECT_CFLAGS)),)
-ifneq ($(strip $(PJPROJECT_DIR)),)
+ifneq ($(strip $(ASTERISK_SRC_DIR)),)
 PJPROJECT_CFLAGS     := -DPJ_AUTOCONF=1 \
-                        -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjlib/include \
-                        -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjlib-util/include \
-                        -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjnath/include \
-                        -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjmedia/include \
-                        -I$(PJPROJECT_DIR)/third-party/pjproject/source/pjsip/include
+                        -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib/include \
+                        -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib-util/include \
+                        -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjnath/include \
+                        -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjmedia/include \
+                        -I$(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjsip/include
 endif
 endif
 
@@ -164,25 +185,25 @@ endif
 # trap" in its worst form (no crash, no warning, just functional
 # break).
 #
-# Mirror asterisk's own rule so PJPROJECT_DIR-mode builds are
+# Mirror asterisk's own rule so ASTERISK_SRC_DIR-mode builds are
 # automatically struct-compatible with the runtime asterisk,
 # regardless of whether the user has run asterisk's own build yet.
 # --------------------------------------------------------------------
 
-ifneq ($(strip $(PJPROJECT_DIR)),)
-PJPROJECT_PATCHES_DIR   := $(PJPROJECT_DIR)/third-party/pjproject/patches
-PJPROJECT_SOURCE_PJ_DIR := $(PJPROJECT_DIR)/third-party/pjproject/source/pjlib/include/pj
-PJPROJECT_PATCH_HEADERS := config_site.h asterisk_malloc_debug.h
+ifneq ($(strip $(ASTERISK_SRC_DIR)),)
+ASTERISK_PJ_PATCHES_DIR := $(ASTERISK_SRC_DIR)/third-party/pjproject/patches
+ASTERISK_PJ_SOURCE_DIR  := $(ASTERISK_SRC_DIR)/third-party/pjproject/source/pjlib/include/pj
+ASTERISK_PJ_PATCH_HDRS  := config_site.h asterisk_malloc_debug.h
 
 # Only include patches that actually exist in this asterisk source tree
 # (older asterisks may ship a different set).
-PJPROJECT_APPLIED_PATCHES := \
-    $(foreach h,$(PJPROJECT_PATCH_HEADERS),\
-        $(if $(wildcard $(PJPROJECT_PATCHES_DIR)/$(h)),\
-            $(PJPROJECT_SOURCE_PJ_DIR)/$(h)))
+ASTERISK_PJ_APPLIED_PATCHES := \
+    $(foreach h,$(ASTERISK_PJ_PATCH_HDRS),\
+        $(if $(wildcard $(ASTERISK_PJ_PATCHES_DIR)/$(h)),\
+            $(ASTERISK_PJ_SOURCE_DIR)/$(h)))
 
-$(PJPROJECT_SOURCE_PJ_DIR)/%.h: $(PJPROJECT_PATCHES_DIR)/%.h
-	@cp -f $< $@
+$(ASTERISK_PJ_SOURCE_DIR)/%.h: $(ASTERISK_PJ_PATCHES_DIR)/%.h
+	cp -f $< $@
 endif
 
 # --------------------------------------------------------------------
@@ -284,7 +305,7 @@ DOC_XML  ?= $(DOC_BUILD_DIR)/res_pjsip_cisco-en_US.xml
 
 .PHONY: all clean install uninstall doc check check-headers help tests
 
-all: check-headers $(PJPROJECT_APPLIED_PATCHES) $(ALL_SOS) $(DOC_XML)
+all: check-headers $(ASTERISK_PJ_APPLIED_PATCHES) $(ALL_SOS) $(DOC_XML)
 
 # --------------------------------------------------------------------
 # Tests: build-artefact smoke checks + pjlib-linked unit tests. See
@@ -293,7 +314,7 @@ all: check-headers $(PJPROJECT_APPLIED_PATCHES) $(ALL_SOS) $(DOC_XML)
 
 tests: all
 	$(MAKE) -C tests/unit all \
-	    PJPROJECT_DIR='$(PJPROJECT_DIR)' \
+	    ASTERISK_SRC_DIR='$(ASTERISK_SRC_DIR)' \
 	    OBJ_DIR='$(OBJ_DIR)' \
 	    MODULE_BUILD_DIR='$(MODULE_BUILD_DIR)' \
 	    DOC_XML='$(DOC_XML)'
@@ -379,13 +400,13 @@ check-headers:
 	    exit 1 )
 	@if [ -z "$(strip $(PJPROJECT_CFLAGS))" ]; then \
 	    echo "pjproject headers not found. One of:" >&2 ; \
-	    echo "  sudo apt install libpjproject-dev          (preferred)" >&2 ; \
-	    echo "  make PJPROJECT_DIR=/path/to/asterisk-source (uses bundled headers)" >&2 ; \
+	    echo "  sudo apt install libpjproject-dev               (preferred)" >&2 ; \
+	    echo "  make ASTERISK_SRC_DIR=/path/to/asterisk-source  (uses bundled headers)" >&2 ; \
 	    exit 1 ; \
 	fi
-	@if [ -z "$(strip $(PJPROJECT_DIR))" ]; then \
+	@if [ -z "$(strip $(ASTERISK_SRC_DIR))" ]; then \
 	    echo "" >&2 ; \
-	    echo "WARNING: building without PJPROJECT_DIR." >&2 ; \
+	    echo "WARNING: building without ASTERISK_SRC_DIR." >&2 ; \
 	    echo "  The pjproject headers you've supplied are not being" >&2 ; \
 	    echo "  overlaid with asterisk's third-party/pjproject/patches/" >&2 ; \
 	    echo "  config_site.h. If the runtime asterisk was built with" >&2 ; \
@@ -394,7 +415,7 @@ check-headers:
 	    echo "  with the binary. The modules will load and run, but" >&2 ; \
 	    echo "  on_rx_request hooks observe NULL msg pointers and" >&2 ; \
 	    echo "  silently no-op. See CLAUDE.md \"header-mismatch trap\"." >&2 ; \
-	    echo "  Recommended: rebuild with PJPROJECT_DIR pointing at" >&2 ; \
+	    echo "  Recommended: rebuild with ASTERISK_SRC_DIR pointing at" >&2 ; \
 	    echo "  the asterisk source tree your runtime asterisk was" >&2 ; \
 	    echo "  built from (e.g. \`apt source asterisk\` for the apt" >&2 ; \
 	    echo "  binary)." >&2 ; \
