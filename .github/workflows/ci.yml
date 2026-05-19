@@ -389,40 +389,70 @@ jobs:
             asterisk-dev \
             sip-tester
 
-      - name: fetch pjproject matching apt asterisk's bundled version
+      - name: fetch pjproject from apt asterisk's source package
         # CLAUDE.md's "header-mismatch trap" in CI form: apt's
-        # asterisk binary was built with whichever pjproject version
-        # the corresponding upstream tag's third-party/versions.mak
-        # pinned. Building our modules against ANY other pjproject
-        # version produces .so files whose pjsip_rx_data struct
-        # offsets disagree with the binary's. Every on_rx_request
-        # hook then reads rdata->msg_info.msg at the wrong offset
-        # and consistently observes NULL — silent functional break,
-        # no SEGV, no compile warning.
+        # asterisk binary was built with a specific pjproject —
+        # but NOT necessarily the version upstream's versions.mak
+        # pins for that asterisk tag. Debian/Ubuntu sometimes bump
+        # the bundled pjproject for security fixes between security
+        # releases, so resolving via upstream's versions.mak gives
+        # the wrong answer ABI-wise.
         #
-        # Resolve via the apt-version's versions.mak (not the
-        # latest-major's). For apt asterisk 20.6.0 this lands on
-        # pjproject 2.14 even though the latest 20.x tag has moved
-        # to 2.16.
+        # `apt source asterisk` pulls the *exact* tarball Debian
+        # used to build the binary, including any third-party/
+        # bundled pjproject that diverges from the upstream pin.
+        # That's the authoritative header source for our rebuild.
         if: steps.apt_asterisk.outputs.major == matrix.asterisk_branch
         run: |
-          APT_FULL='${{ steps.apt_asterisk.outputs.full }}'
-          wget -q "https://raw.githubusercontent.com/asterisk/asterisk/${APT_FULL}/third-party/versions.mak" \
-              -O apt-versions.mak
-          APT_PJ=$(grep -E '^PJPROJECT_VERSION[[:space:]]*=' apt-versions.mak \
-                     | head -1 | cut -d= -f2 | tr -d ' \t')
-          if [ -z "$APT_PJ" ]; then
-            echo "::error::Could not extract PJPROJECT_VERSION from asterisk ${APT_FULL}'s third-party/versions.mak"
+          # Ubuntu noble switched /etc/apt/sources.list.d/ubuntu.sources
+          # to deb822 with `Types: deb` only — flip on deb-src so
+          # apt-get source has something to read.
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' \
+              /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq
+
+          mkdir -p apt-source
+          (cd apt-source && apt-get source asterisk)
+          SRC=$(find apt-source -maxdepth 1 -type d -name 'asterisk-*' | head -1)
+          if [ -z "$SRC" ]; then
+            echo "::error::Could not find extracted asterisk source"
+            ls -la apt-source
             exit 1
           fi
-          echo "apt asterisk ${APT_FULL} bundles pjproject ${APT_PJ}"
-          wget -q "https://github.com/pjsip/pjproject/archive/refs/tags/${APT_PJ}.tar.gz" \
-              -O apt-pjproject.tgz
-          tar xzf apt-pjproject.tgz
-          mv "pjproject-${APT_PJ}" apt-pjproject
-          # Same K&R prototype fix the earlier fetch applies; see
-          # the comment on the "fetch pjproject headers" step for
-          # context.
+          echo "Debian asterisk source extracted to: $SRC"
+          echo "--- contents of $SRC/third-party ---"
+          ls "$SRC/third-party" | head -30
+
+          # Locate the bundled pjproject. Asterisk's source ships it
+          # in one of two shapes depending on the release era and
+          # how Debian patched things:
+          #   * third-party/pjproject/source/    (pre-extracted source tree)
+          #   * third-party/pjproject-X.Y.Z.tar.{bz2,gz}  (tarball)
+          mkdir -p apt-pjproject
+          if [ -d "$SRC/third-party/pjproject/source" ]; then
+            echo "Using pre-extracted pjproject from third-party/pjproject/source"
+            cp -r "$SRC/third-party/pjproject/source/." apt-pjproject/
+          else
+            TARBALL=$(ls "$SRC"/third-party/pjproject-*.tar.bz2 \
+                         "$SRC"/third-party/pjproject-*.tar.gz \
+                         2>/dev/null | head -1)
+            if [ -z "$TARBALL" ]; then
+              echo "::error::No pjproject tarball or pre-extracted source found in apt source"
+              find "$SRC/third-party" -maxdepth 2 -name 'pjproject*'
+              exit 1
+            fi
+            echo "Extracting $TARBALL"
+            tar xf "$TARBALL" -C apt-pjproject --strip-components=1
+          fi
+
+          # Try to print the resolved version (best-effort; serves
+          # as a diagnostic when the ABI mismatch keeps biting).
+          if [ -f apt-pjproject/version.mak ]; then
+            grep -E 'VERSION' apt-pjproject/version.mak || true
+          fi
+
+          # Same K&R prototype fix the upstream fetch applies; see
+          # the comment on the "fetch pjproject headers" step.
           sed -i 's|pj_thread_unregister()|pj_thread_unregister(void)|' \
               apt-pjproject/pjlib/include/pj/os.h
           : > apt-pjproject/pjlib/include/pj/config_site.h
