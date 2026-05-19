@@ -3,6 +3,8 @@ obj/
 tests/unit/*.o
 tests/unit/test_*
 !tests/unit/test_*.c
+__pycache__/
+*.pyc
 
 # Debian build droppings
 debian/.debhelper/

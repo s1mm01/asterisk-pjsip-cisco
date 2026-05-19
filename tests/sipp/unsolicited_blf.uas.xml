@@ -4,8 +4,13 @@
 <!--
   Unsolicited BLF NOTIFYs — UAS half.
 
-  Listens on TCP port 15060 (the Contact URI port the paired UAC
-  registered). After 1010's REGISTER, asterisk fires THREE deferred
+  Historical SIPp UAS sketch. run.sh now uses collect_unsolicited_blf.py
+  for this half because each unsolicited NOTIFY is an independent
+  out-of-dialog request with its own Call-ID, which SIPp 3.7 cannot
+  reliably express as one linear UAS call.
+
+  This sketch listens on the Contact URI port the paired UAC
+  registered. After 1010's REGISTER, asterisk fires THREE deferred
   post-REGISTER tasks at this Contact:
 
     * cisco-bulkupdate: one REFER carrying 1010's line config (every

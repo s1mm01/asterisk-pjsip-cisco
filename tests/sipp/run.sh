@@ -25,10 +25,43 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASTERISK_HOST="${ASTERISK_HOST:-127.0.0.1}"
 ASTERISK_PORT="${ASTERISK_PORT:-5160}"
-SIPP_LOCAL_PORT="${SIPP_LOCAL_PORT:-15060}"
+SIPP_BASE_PORT="${SIPP_LOCAL_PORT:-15060}"
+SIPP_PORT_STRIDE="${SIPP_PORT_STRIDE:-10}"
 SIPP_TRACE_DIR="${SIPP_TRACE_DIR:-/tmp/sipp-traces}"
+SIPP_RENDER_DIR="$SIPP_TRACE_DIR/rendered-scenarios"
+SIPP_NEXT_PORT="$SIPP_BASE_PORT"
 
-mkdir -p "$SIPP_TRACE_DIR"
+mkdir -p "$SIPP_TRACE_DIR" "$SIPP_RENDER_DIR"
+
+next_sipp_port() {
+    local port="$SIPP_NEXT_PORT"
+
+    SIPP_NEXT_PORT=$((SIPP_NEXT_PORT + SIPP_PORT_STRIDE))
+    echo "$port"
+}
+
+render_scenario() {
+    local scenario="$1"
+    local contact_port="${2:-}"
+    local rendered="$SIPP_RENDER_DIR/$(basename "$scenario")"
+
+    if [ -n "$contact_port" ]; then
+        sed "s/__SIPP_CONTACT_PORT__/$contact_port/g" \
+            "$scenario" > "$rendered"
+        echo "$rendered"
+    else
+        echo "$scenario"
+    fi
+}
+
+assert_no_unrendered_placeholders() {
+    local scenario="$1"
+
+    if grep -q "__SIPP_CONTACT_PORT__" "$scenario"; then
+        echo "::error::$scenario still contains an unrendered contact-port placeholder"
+        return 1
+    fi
+}
 
 # On any exit (clean or via set -e from a failed scenario), copy
 # asterisk's own log + a snapshot of its sorcery state into the
@@ -82,12 +115,16 @@ sudo asterisk -rx 'core set verbose 5' >/dev/null 2>&1 || true
 run_scenario() {
     local scenario="$1"
     local name
+    local local_port
+
     name=$(basename "$scenario" .xml)
+    local_port=$(next_sipp_port)
+    assert_no_unrendered_placeholders "$scenario"
 
     echo
     echo "=== SIPp scenario: $name ==="
     echo "  asterisk:   $ASTERISK_HOST:$ASTERISK_PORT"
-    echo "  sipp local: 0.0.0.0:$SIPP_LOCAL_PORT"
+    echo "  sipp local: 0.0.0.0:$local_port"
     echo
 
     # Pre-scenario state dump — useful for understanding whether
@@ -105,7 +142,7 @@ run_scenario() {
     timeout 60s sipp \
         -sf "$scenario" \
         -m 1 \
-        -p "$SIPP_LOCAL_PORT" \
+        -p "$local_port" \
         -t t1 \
         -nostdin \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.err" \
@@ -133,12 +170,11 @@ run_scenario() {
 # observe these.
 #
 # Workaround: split into two SIPp processes.
-#   * UAS scenario binds the Contact URI's port (15060), starts in
-#     receive mode. SIPp accepts new inbound dialogs by default in
-#     UAS mode.
-#   * UAC scenario uses a different local port (15061) for the
-#     REGISTER exchange. The UAC's Contact header points at the
-#     UAS port, so asterisk dispatches subsequent traffic there.
+#   * UAS scenario binds the Contact URI's port, starts in receive
+#     mode, and accepts new inbound dialogs by default in UAS mode.
+#   * UAC scenario uses the next port for the REGISTER exchange.
+#     The UAC's Contact header points at the UAS port, so asterisk
+#     dispatches subsequent traffic there.
 #   * Drop reg-id from the UAC's Contact to avoid RFC 5626 outbound
 #     flow reuse — without it, asterisk does classic Contact-URI
 #     dispatch and the inbound request lands on the UAS socket.
@@ -149,21 +185,34 @@ run_paired() {
     local uac="$1"
     local uas="$2"
     local name
+    local uas_port
+    local uac_port
+    local rendered_uac
+    local rendered_uas
+    local uac_rc
+    local uas_rc
+
     name=$(basename "$uac" .uac.xml)
+    uas_port=$(next_sipp_port)
+    uac_port=$((uas_port + 1))
+    rendered_uac=$(render_scenario "$uac" "$uas_port")
+    rendered_uas=$(render_scenario "$uas" "$uas_port")
+    assert_no_unrendered_placeholders "$rendered_uac"
+    assert_no_unrendered_placeholders "$rendered_uas"
 
     echo
     echo "=== SIPp paired scenario: $name ==="
     echo "  asterisk:   $ASTERISK_HOST:$ASTERISK_PORT"
-    echo "  sipp UAS:   0.0.0.0:$SIPP_LOCAL_PORT"
-    echo "  sipp UAC:   0.0.0.0:$((SIPP_LOCAL_PORT + 1))"
+    echo "  sipp UAS:   0.0.0.0:$uas_port"
+    echo "  sipp UAC:   0.0.0.0:$uac_port"
     echo
 
     # Start UAS in background — needs to be bound and listening
     # before the UAC's REGISTER triggers asterisk's deferred task.
     timeout 60s sipp \
-        -sf "$uas" \
+        -sf "$rendered_uas" \
         -m 1 \
-        -p "$SIPP_LOCAL_PORT" \
+        -p "$uas_port" \
         -t t1 \
         -nostdin \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.uas.err" \
@@ -180,10 +229,11 @@ run_paired() {
 
     # UAC on a different port; sends REGISTER and waits for asterisk
     # to dispatch the out-of-dialog request to the UAS.
+    set +e
     timeout 60s sipp \
-        -sf "$uac" \
+        -sf "$rendered_uac" \
         -m 1 \
-        -p $((SIPP_LOCAL_PORT + 1)) \
+        -p "$uac_port" \
         -t t1 \
         -nostdin \
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.uac.err" \
@@ -192,14 +242,86 @@ run_paired() {
         -deadcall_wait 0 \
         "$ASTERISK_HOST:$ASTERISK_PORT" \
         < /dev/null
-    local uac_rc=$?
+    uac_rc=$?
+
+    if [ $uac_rc -ne 0 ]; then
+        kill "$uas_pid" 2>/dev/null || true
+    fi
 
     # UAS should have completed its single inbound by now.
     wait $uas_pid
-    local uas_rc=$?
+    uas_rc=$?
+    set -e
 
     if [ $uac_rc -ne 0 ] || [ $uas_rc -ne 0 ]; then
         echo "::error::paired scenario $name failed (UAC=$uac_rc, UAS=$uas_rc)"
+        return 1
+    fi
+}
+
+run_unsolicited_blf() {
+    local uac="$1"
+    local name
+    local uas_port
+    local uac_port
+    local rendered_uac
+    local collector_pid
+    local collector_rc
+    local uac_rc
+
+    name=$(basename "$uac" .uac.xml)
+    uas_port=$(next_sipp_port)
+    uac_port=$((uas_port + 1))
+    rendered_uac=$(render_scenario "$uac" "$uas_port")
+    assert_no_unrendered_placeholders "$rendered_uac"
+
+    echo
+    echo "=== SIPp + collector scenario: $name ==="
+    echo "  asterisk:   $ASTERISK_HOST:$ASTERISK_PORT"
+    echo "  collector:  0.0.0.0:$uas_port"
+    echo "  sipp UAC:   0.0.0.0:$uac_port"
+    echo
+
+    python3 "$SCRIPT_DIR/collect_unsolicited_blf.py" \
+        --host 0.0.0.0 \
+        --port "$uas_port" \
+        --timeout 30 \
+        --expected-tuple 1030 \
+        --expected-tuple 1050 \
+        > "$SIPP_TRACE_DIR/$name.collector.log" 2>&1 &
+    collector_pid=$!
+
+    # Brief delay so the collector bind completes before REGISTER
+    # triggers asterisk's deferred unsolicited-NOTIFY task.
+    sleep 1
+
+    set +e
+    timeout 60s sipp \
+        -sf "$rendered_uac" \
+        -m 1 \
+        -p "$uac_port" \
+        -t t1 \
+        -nostdin \
+        -trace_err -error_file "$SIPP_TRACE_DIR/$name.uac.err" \
+        -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.uac.screen" \
+        -timeout 30s \
+        -deadcall_wait 0 \
+        "$ASTERISK_HOST:$ASTERISK_PORT" \
+        < /dev/null
+    uac_rc=$?
+
+    if [ $uac_rc -ne 0 ]; then
+        kill "$collector_pid" 2>/dev/null || true
+    fi
+
+    wait "$collector_pid"
+    collector_rc=$?
+    set -e
+
+    if [ $uac_rc -ne 0 ] || [ $collector_rc -ne 0 ]; then
+        echo "::error::collector scenario $name failed (UAC=$uac_rc, collector=$collector_rc)"
+        echo "--- $SIPP_TRACE_DIR/$name.collector.log ---"
+        cat "$SIPP_TRACE_DIR/$name.collector.log" 2>/dev/null || true
         return 1
     fi
 }
@@ -212,6 +334,9 @@ for scenario in "$SCRIPT_DIR"/*.xml; do
     case "$scenario" in
         *.uas.xml)
             continue
+            ;;
+        */unsolicited_blf.uac.xml)
+            run_unsolicited_blf "$scenario"
             ;;
         *.uac.xml)
             uas="${scenario%.uac.xml}.uas.xml"

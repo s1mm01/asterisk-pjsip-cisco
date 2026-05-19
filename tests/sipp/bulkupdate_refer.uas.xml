@@ -4,8 +4,8 @@
 <!--
   Bulkupdate REFER — UAS half.
 
-  Listens on TCP port 15060 (the Contact URI port the paired UAC
-  registered). asterisk's post-REGISTER deferred task dispatches
+  Listens on the Contact URI port the paired UAC registered.
+  asterisk's post-REGISTER deferred task dispatches
   a bulkupdate REFER to that Contact; this scenario asserts on
   the inbound REFER's body shape and ACKs with 200 OK.
 

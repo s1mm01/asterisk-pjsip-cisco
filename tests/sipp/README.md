@@ -101,6 +101,12 @@ This scenario REGISTERs as `1010` (whose `subscribe=` list is
 `1030,1050`), then expects two NOTIFYs and asserts each is
 Cisco-shaped.
 
+The UAC half is still SIPp. The UAS half uses
+`collect_unsolicited_blf.py` because each unsolicited NOTIFY is a
+separate out-of-dialog request with its own Call-ID; SIPp 3.7 cannot
+reliably express "REFER plus two independent NOTIFYs" as one linear
+UAS scenario.
+
 Asserts (per NOTIFY, twice):
 
 - `Event: presence` header (no SUBSCRIBE preceded; this confirms the
@@ -113,7 +119,7 @@ This is the third of the four signals Cisco firmware needs to flip a
 line button from plain Speed Dial to BLF Speed Dial. The other three:
 SEP file (provisioning-side, out of scope), the 200-OK optionsind body
 (see `register_optionsind.xml`), and the post-REGISTER bulkupdate
-REFER (not yet a SIPp scenario; bench-only today).
+REFER (see `bulkupdate_refer.xml`).
 
 ## Running locally
 
@@ -121,6 +127,7 @@ Requires:
 
 - `sip-tester` (Debian/Ubuntu) installed — provides the `sipp`
   binary
+- `python3` for the unsolicited-BLF collector
 - asterisk running with `tests/ci/pjsip.conf` loaded (declares a
   TCP transport on 127.0.0.1:5160 — Cisco Enterprise SIP firmware
   is SIP-over-TCP only, so the test scenarios match)
@@ -138,6 +145,11 @@ sudo asterisk -rx 'core waitfullybooted'
 Override the target asterisk via `ASTERISK_HOST` / `ASTERISK_PORT`
 env vars; default is `127.0.0.1:5160` (matches the test pjsip.conf's
 transport bind).
+
+`SIPP_LOCAL_PORT` is the base port for simulated phone sockets
+(default `15060`). `run.sh` advances by `SIPP_PORT_STRIDE` (default
+`10`) for each scenario so delayed REFER/NOTIFY traffic from one
+registered contact cannot land on the next scenario's listener.
 
 Traces (per-call summary, errors) are written to `/tmp/sipp-traces/`;
 override with `SIPP_TRACE_DIR=...`.

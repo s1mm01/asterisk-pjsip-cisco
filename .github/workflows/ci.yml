@@ -75,6 +75,7 @@ jobs:
             wget \
             curl \
             jq \
+            python3 \
             ca-certificates \
             libxml2-dev \
             libxml2-utils \
