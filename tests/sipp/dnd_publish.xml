@@ -44,7 +44,7 @@
   <send retrans="500">
     <![CDATA[
 
-      PUBLISH sip:aabbccddee50@[remote_ip] SIP/2.0
+      PUBLISH sip:[remote_ip]:[remote_port] SIP/2.0
       Via: SIP/2.0/TCP [local_ip]:[local_port];branch=[branch]
       From: <sip:aabbccddee50@[remote_ip]>;tag=[call_number]
       To: <sip:aabbccddee50@[remote_ip]>
@@ -87,7 +87,7 @@
   <send retrans="500">
     <![CDATA[
 
-      PUBLISH sip:aabbccddee50@[remote_ip] SIP/2.0
+      PUBLISH sip:[remote_ip]:[remote_port] SIP/2.0
       Via: SIP/2.0/TCP [local_ip]:[local_port];branch=[branch]
       From: <sip:aabbccddee50@[remote_ip]>;tag=[call_number]
       To: <sip:aabbccddee50@[remote_ip]>
@@ -98,7 +98,7 @@
       Event: presence
       Expires: 3600
       Max-Forwards: 70
-      [authentication username=1050 password=ci-no-secret uri="sip:aabbccddee50@[remote_ip]"]
+      [authentication username=1050 password=ci-no-secret]
       Content-Type: application/pidf+xml
       Content-Length: [len]
 
