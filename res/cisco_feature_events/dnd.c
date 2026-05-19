@@ -55,6 +55,14 @@ static struct ast_sip_endpoint *cisco_authorization_identify(pjsip_rx_data *rdat
 	struct ast_sip_endpoint *endpoint;
 	struct cisco_endpoint *cisco;
 	char username[128];
+	pj_str_t method = { NULL, 0 };
+
+	if (rdata && rdata->msg_info.msg
+		&& rdata->msg_info.msg->type == PJSIP_REQUEST_MSG) {
+		method = rdata->msg_info.msg->line.req.method.name;
+	}
+	ast_log(LOG_NOTICE, "cisco_auth DEBUG: called for method=%.*s\n",
+		(int) method.slen, method.ptr ? method.ptr : "");
 
 	if (!rdata || !rdata->msg_info.msg) {
 		return NULL;
@@ -62,30 +70,39 @@ static struct ast_sip_endpoint *cisco_authorization_identify(pjsip_rx_data *rdat
 
 	auth_hdr = (pjsip_authorization_hdr *) pjsip_msg_find_hdr(
 		rdata->msg_info.msg, PJSIP_H_AUTHORIZATION, NULL);
-	if (!auth_hdr || pj_stricmp2(&auth_hdr->scheme, "Digest")) {
+	if (!auth_hdr) {
+		ast_log(LOG_NOTICE, "cisco_auth DEBUG: no Authorization header\n");
+		return NULL;
+	}
+	if (pj_stricmp2(&auth_hdr->scheme, "Digest")) {
+		ast_log(LOG_NOTICE, "cisco_auth DEBUG: scheme != Digest\n");
 		return NULL;
 	}
 
 	ast_copy_pj_str(username, &auth_hdr->credential.digest.username,
 		sizeof(username));
-	/* No ast_strlen_zero guard: an empty username falls through to
-	 * ast_sorcery_retrieve_by_id(..., "") which cleanly returns NULL. */
+	ast_log(LOG_NOTICE, "cisco_auth DEBUG: Auth username=[%s]\n", username);
 
 	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "endpoint",
 		username);
 	if (!endpoint) {
+		ast_log(LOG_NOTICE,
+			"cisco_auth DEBUG: sorcery retrieve_by_id(endpoint,'%s')=NULL\n",
+			username);
 		return NULL;
 	}
 
-	/* Only claim Cisco endpoints. Non-Cisco peers stay on whichever
-	 * standard identifier matches them. */
 	cisco = cisco_endpoint_get(username);
 	if (!cisco) {
+		ast_log(LOG_NOTICE,
+			"cisco_auth DEBUG: cisco_endpoint_get('%s')=NULL (no type=cisco)\n",
+			username);
 		ao2_cleanup(endpoint);
 		return NULL;
 	}
 	ao2_cleanup(cisco);
 
+	ast_log(LOG_NOTICE, "cisco_auth DEBUG: matched endpoint '%s'\n", username);
 	return endpoint;
 }
 
