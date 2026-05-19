@@ -52,7 +52,7 @@
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
       Contact: <sip:1010@[local_ip]:[local_port];transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddeeff>";reg-id=1
-      Reason: SIP;cause=200;text="Name=SEPAABBCCDDEEFF; ActiveLoad=sip8865.12-1-1-12; InactiveLoad=sip8865.cert-2014"
+      Reason: SIP;cause=200;text="Name=SEPAABBCCDDEEFF ActiveLoad=sip8865.12-1-1-12 InactiveLoad=sip8865.cert-2014"
       Expires: 3600
       Content-Length: 0
 
@@ -86,7 +86,7 @@
       User-Agent: Cisco-CP8865/12.1.1
       Max-Forwards: 70
       Contact: <sip:1010@[local_ip]:[local_port];transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddeeff>";reg-id=1
-      Reason: SIP;cause=200;text="Name=SEPAABBCCDDEEFF; ActiveLoad=sip8865.12-1-1-12; InactiveLoad=sip8865.cert-2014"
+      Reason: SIP;cause=200;text="Name=SEPAABBCCDDEEFF ActiveLoad=sip8865.12-1-1-12 InactiveLoad=sip8865.cert-2014"
       [authentication username=1010 password=ci-no-secret]
       Expires: 3600
       Content-Length: 0
