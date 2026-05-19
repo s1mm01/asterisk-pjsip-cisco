@@ -207,32 +207,7 @@ static pj_bool_t subscribe_expires_clamp_on_rx_request(pjsip_rx_data *rdata)
  * we wouldn't want clamp to mutate the request first). */
 static pj_bool_t cisco_feature_events_on_rx_request(pjsip_rx_data *rdata)
 {
-	/* UNCONDITIONAL ENTRY LOG — fires for absolutely every inbound
-	 * request that reaches us. If this is missing from full.log,
-	 * pjsip isn't dispatching to our hook at all. */
-	ast_log(LOG_NOTICE, "cisco-feature-events DEBUG-ENTRY: called rdata=%p\n",
-		(void *) rdata);
-
-	if (rdata && rdata->msg_info.msg
-		&& rdata->msg_info.msg->type == PJSIP_REQUEST_MSG) {
-		pj_str_t method = rdata->msg_info.msg->line.req.method.name;
-		pjsip_generic_string_hdr *event_hdr;
-		pj_str_t event_name = pj_str("Event");
-		char ev[64] = "(none)";
-
-		event_hdr = (pjsip_generic_string_hdr *) pjsip_msg_find_hdr_by_name(
-			rdata->msg_info.msg, &event_name, NULL);
-		if (event_hdr) {
-			ast_copy_pj_str(ev, &event_hdr->hvalue, sizeof(ev));
-		}
-		ast_log(LOG_NOTICE,
-			"cisco-feature-events DEBUG: method=%.*s event=%s\n",
-			(int) method.slen, method.ptr, ev);
-	}
-
 	if (cisco_feature_events_dnd_on_rx_request(rdata)) {
-		ast_log(LOG_NOTICE,
-			"cisco-feature-events DEBUG: dnd_on_rx_request claimed it\n");
 		return PJ_TRUE;
 	}
 	subscribe_expires_clamp_on_rx_request(rdata);
@@ -243,18 +218,12 @@ static pj_bool_t cisco_feature_events_on_rx_request(pjsip_rx_data *rdata)
 static pjsip_module cisco_feature_events_module = {
 	.name             = { "cisco-feature-events", 20 },
 	.id               = -1,
-	/* DEBUG: ridiculously high priority (low number) to bypass any
-	 * other module that might be consuming inbound requests before
-	 * us. APPLICATION-1 was the production setting; reset before
-	 * merging. */
-	.priority         = PJSIP_MOD_PRIORITY_TSX_LAYER + 1,
+	.priority         = PJSIP_MOD_PRIORITY_APPLICATION - 1,
 	.on_rx_request    = cisco_feature_events_on_rx_request,
 };
 
 static int load_module(void)
 {
-	ast_log(LOG_NOTICE,
-		"cisco-feature-events DEBUG-XYZ: load_module entered\n");
 	/* Bring the per-PATH state up first, then register the pjsip
 	 * module so request delivery starts. Tear down in reverse on
 	 * failure. */
@@ -272,9 +241,6 @@ static int load_module(void)
 			"cisco-feature-events: failed to register pjsip module\n");
 		return AST_MODULE_LOAD_DECLINE;
 	}
-	ast_log(LOG_NOTICE,
-		"cisco-feature-events DEBUG-XYZ: pjsip module registered, on_rx_request=%p\n",
-		(void *) cisco_feature_events_module.on_rx_request);
 	return AST_MODULE_LOAD_SUCCESS;
 }
 
