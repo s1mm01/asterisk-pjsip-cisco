@@ -318,6 +318,11 @@ DOC_XML  ?= $(DOC_BUILD_DIR)/res_pjsip_cisco-en_US.xml
 
 .PHONY: all clean install uninstall doc check check-headers help tests
 
+# `all` is the default goal even when targets earlier in the file
+# (e.g. the FORCE phony in the pjproject patches block) might
+# otherwise win make's first-rule-defines-default-goal heuristic.
+.DEFAULT_GOAL := all
+
 all: check-headers $(ASTERISK_PJ_APPLIED_PATCHES) $(ALL_SOS) $(DOC_XML)
 
 # --------------------------------------------------------------------
