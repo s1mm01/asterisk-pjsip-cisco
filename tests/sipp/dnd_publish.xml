@@ -98,7 +98,7 @@
       Event: presence
       Expires: 3600
       Max-Forwards: 70
-      [authentication username=1050 password=ci-no-secret]
+      [authentication username=1050 password=ci-no-secret uri="sip:aabbccddee50@[remote_ip]"]
       Content-Type: application/pidf+xml
       Content-Length: [len]
 
