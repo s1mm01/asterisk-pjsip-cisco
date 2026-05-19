@@ -257,7 +257,7 @@ status_1050=$(sudo asterisk -rx 'pjsip cisco status 1050')
 echo "$status_1050"
 echo
 if ! echo "$status_1050" | grep -qE "DND/1050: +on"; then
-    echo "::error::1050 DND state was not set by PATH B PUBLISH"
+    echo "::error::1050 DND state was not set by PATH C PUBLISH"
     fail=1
 fi
 
