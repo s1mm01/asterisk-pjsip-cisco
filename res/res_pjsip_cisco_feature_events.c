@@ -246,6 +246,8 @@ static pjsip_module cisco_feature_events_module = {
 
 static int load_module(void)
 {
+	ast_log(LOG_NOTICE,
+		"cisco-feature-events DEBUG-XYZ: load_module entered\n");
 	/* Bring the per-PATH state up first, then register the pjsip
 	 * module so request delivery starts. Tear down in reverse on
 	 * failure. */
@@ -263,6 +265,9 @@ static int load_module(void)
 			"cisco-feature-events: failed to register pjsip module\n");
 		return AST_MODULE_LOAD_DECLINE;
 	}
+	ast_log(LOG_NOTICE,
+		"cisco-feature-events DEBUG-XYZ: pjsip module registered, on_rx_request=%p\n",
+		(void *) cisco_feature_events_module.on_rx_request);
 	return AST_MODULE_LOAD_SUCCESS;
 }
 
