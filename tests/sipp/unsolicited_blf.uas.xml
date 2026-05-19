@@ -79,8 +79,13 @@
     ]]>
   </send>
 
-  <!-- Slot 7: optional REFER after last NOTIFY. -->
-  <recv request="REFER" optional="true" crlf="true"/>
+  <!-- No trailing optional REFER slot: SIPp 3.7 won't end the call
+       until every optional recv has either matched or been ruled out
+       (which happens when a later element matches), so a trailing
+       optional ties up the scenario waiting for a message that never
+       arrives. asterisk will retransmit any unACKed late-REFER on the
+       TCP socket, but by then the scenario has ended and SIPp tears
+       the connection down. -->
 
   <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
   <CallLengthRepartition value="10, 50, 100, 500, 1000"/>

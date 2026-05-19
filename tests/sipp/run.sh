@@ -111,6 +111,7 @@ run_scenario() {
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.err" \
         -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.screen" \
         -timeout 30s \
+        -deadcall_wait 0 \
         "$ASTERISK_HOST:$ASTERISK_PORT" \
         < /dev/null
 }
@@ -168,6 +169,7 @@ run_paired() {
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.uas.err" \
         -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.uas.screen" \
         -timeout 30s \
+        -deadcall_wait 0 \
         "$ASTERISK_HOST:$ASTERISK_PORT" \
         < /dev/null &
     local uas_pid=$!
@@ -187,6 +189,7 @@ run_paired() {
         -trace_err -error_file "$SIPP_TRACE_DIR/$name.uac.err" \
         -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.uac.screen" \
         -timeout 30s \
+        -deadcall_wait 0 \
         "$ASTERISK_HOST:$ASTERISK_PORT" \
         < /dev/null
     local uac_rc=$?
