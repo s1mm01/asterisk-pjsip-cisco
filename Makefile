@@ -205,8 +205,18 @@ ASTERISK_PJ_APPLIED_PATCHES := \
     $(patsubst $(ASTERISK_PJ_PATCHES_DIR)/%,$(ASTERISK_PJ_SOURCE_DIR)/%,\
         $(wildcard $(ASTERISK_PJ_PATCHES_DIR)/*.h))
 
-$(ASTERISK_PJ_SOURCE_DIR)/%.h: $(ASTERISK_PJ_PATCHES_DIR)/%.h
+# FORCE prerequisite makes the overlay copy fire on every make
+# invocation. The natural timestamp check (dest older than source =
+# rebuild) is unreliable here: an empty stub config_site.h is often
+# pre-created with a fresh mtime so pjproject's ./configure has
+# something to include, which leaves the overlay erroneously
+# unapplied on subsequent make. The copy is two ~3KB files; the cost
+# is negligible, and guaranteeing correctness is worth more.
+$(ASTERISK_PJ_SOURCE_DIR)/%.h: $(ASTERISK_PJ_PATCHES_DIR)/%.h FORCE
 	cp -f $< $@
+
+.PHONY: FORCE
+FORCE:
 endif
 
 # --------------------------------------------------------------------
