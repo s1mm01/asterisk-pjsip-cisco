@@ -111,19 +111,29 @@ static int cisco_pidf_supplement_body(void *body, void *data)
 		return -1;
 	}
 
-	/* State -> activity element mapping mirrors the chan_sip
+	/* State -> activity element mapping. Mostly mirrors the chan_sip
 	 * cisco-usecallmanager patch (channels/sip/request.c:556-568):
-	 *   RINGING                       -> <ce:alerting/>      (Cisco-private)
 	 *   INUSE | ONHOLD | BUSY         -> <e:on-the-phone/>   (RFC 4480)
 	 *   BUSY                          -> <e:busy/>           (RFC 4480, in addition)
+	 *   RINGING                       -> <ce:alerting/>      (Cisco-private)
 	 *   presence == AST_PRESENCE_DND  -> <ce:dnd/>           (Cisco-private)
-	 */
-	if (exten_state & AST_EXTENSION_RINGING) {
-		ast_sip_presence_xml_create_node(state_data->pool, activities, "ce:alerting");
-	} else if (exten_state & (AST_EXTENSION_INUSE
+	 *
+	 * Deliberate divergence from chan_sip: the upstream patch emits
+	 * <ce:alerting/> whenever RINGING is set even if the line is
+	 * already INUSE/BUSY/ONHOLD or the watched extension is DND. That
+	 * makes a busy line flash 'alerting' on every other phone's BLF
+	 * when a second call arrives, which reads as "available to pick
+	 * up" to operators — the opposite of what's actually true.
+	 * Suppress <ce:alerting/> when the line is already engaged or DND
+	 * so the BLF stays on on-the-phone / dnd through the whole
+	 * second-call setup. */
+	if (exten_state & (AST_EXTENSION_INUSE
 			| AST_EXTENSION_ONHOLD
 			| AST_EXTENSION_BUSY)) {
 		ast_sip_presence_xml_create_node(state_data->pool, activities, "e:on-the-phone");
+	} else if (presence_state != AST_PRESENCE_DND
+			&& (exten_state & AST_EXTENSION_RINGING)) {
+		ast_sip_presence_xml_create_node(state_data->pool, activities, "ce:alerting");
 	}
 
 	if (exten_state & AST_EXTENSION_BUSY) {

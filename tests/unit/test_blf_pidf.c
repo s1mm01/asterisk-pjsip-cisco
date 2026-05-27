@@ -122,9 +122,24 @@ int main(void)
 		"      <e:on-the-phone/>\n      <e:busy/>\n",
 		"open");
 
-	check("ringing + DND → <ce:alerting/> + <ce:dnd/>",
+	/* Deliberate divergence from the chan_sip patch — see the
+	 * rationale comment in res/cisco_unsolicited_blf/pidf.c.
+	 * <ce:alerting/> is suppressed whenever the line is already
+	 * engaged or DND, so the BLF stays readable as 'on a call' /
+	 * 'do not disturb' through second-call setup. */
+	check("ringing + DND → just <ce:dnd/> (alerting suppressed)",
 		AST_EXTENSION_RINGING, AST_PRESENCE_DND,
-		"      <ce:alerting/>\n      <ce:dnd/>\n",
+		"      <ce:dnd/>\n",
+		"open");
+
+	check("ringing + INUSE → <e:on-the-phone/> (alerting suppressed)",
+		AST_EXTENSION_INUSE | AST_EXTENSION_RINGING, AST_PRESENCE_AVAILABLE,
+		"      <e:on-the-phone/>\n",
+		"open");
+
+	check("ringing + BUSY → <e:on-the-phone/> + <e:busy/> (alerting suppressed)",
+		AST_EXTENSION_BUSY | AST_EXTENSION_RINGING, AST_PRESENCE_AVAILABLE,
+		"      <e:on-the-phone/>\n      <e:busy/>\n",
 		"open");
 
 	check("idle + DND → just <ce:dnd/>",

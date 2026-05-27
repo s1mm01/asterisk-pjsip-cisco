@@ -47,10 +47,20 @@ char *cisco_blf_build_pidf(const char *exten, const char *domain,
 		"    <e:activities>\n",
 		exten_xml, domain_xml);
 
-	if (exten_state & AST_EXTENSION_RINGING) {
-		ast_str_append(&out, 0, "      <ce:alerting/>\n");
-	} else if (exten_state & (AST_EXTENSION_INUSE | AST_EXTENSION_ONHOLD | AST_EXTENSION_BUSY)) {
+	/* Deliberate divergence from the chan_sip cisco-usecallmanager patch
+	 * (channels/sip/request.c:556-568), which emits <ce:alerting/>
+	 * whenever RINGING is set even if the line is already INUSE/BUSY/
+	 * ONHOLD or the watched extension is DND. That makes a busy line
+	 * flash 'alerting' on every other phone's BLF when a second call
+	 * arrives, which reads as "available to pick up" to operators —
+	 * the opposite of what's actually true. Suppress <ce:alerting/>
+	 * when the line is already engaged or DND so the BLF stays on
+	 * on-the-phone / dnd through the whole second-call setup. */
+	if (exten_state & (AST_EXTENSION_INUSE | AST_EXTENSION_ONHOLD | AST_EXTENSION_BUSY)) {
 		ast_str_append(&out, 0, "      <e:on-the-phone/>\n");
+	} else if (presence_state != AST_PRESENCE_DND
+		&& (exten_state & AST_EXTENSION_RINGING)) {
+		ast_str_append(&out, 0, "      <ce:alerting/>\n");
 	}
 	if (exten_state & AST_EXTENSION_BUSY) {
 		ast_str_append(&out, 0, "      <e:busy/>\n");
