@@ -137,53 +137,62 @@ void cisco_uri_list_free(char **uris);
  *        with expires > 0 (skips deregister rows). Caller frees with
  *        ast_free().
  *
- * Retained for callers that want a single-string representation (e.g.
- * for logging or whole-set comparison); the cache itself works with
- * the URI set, not this string.
+ * Retained for callers that want a single-string representation of the
+ * 200 OK's view (e.g. for logging). The cache itself reads URIs from
+ * the AOR, not this msg-based string, so these two sources may differ
+ * across Asterisk versions in URI parameter ordering / escaping — the
+ * cache deliberately commits to the AOR form because that's what the
+ * fanout consumers (REFER/NOTIFY iterators) work with too.
  *
  * \retval NULL on alloc failure, no contacts, or Contact: * (deregister)
  */
 struct ast_str *cisco_response_contacts_canonical(pjsip_msg *msg);
 
 /*!
- * \brief Read-only: does the canonical Contact set in \a msg differ
- *        from what \a cache last remembered for this endpoint?
+ * \brief Read-only: does the current AOR Contact set differ from what
+ *        \a cache last remembered for this endpoint?
  *
  * Returns 1 (changed, caller should fire) when any URI in the current
- * Contact set is missing from the cached set OR vice versa. Returns 0
- * only when the two sets are equal. Does NOT update the cache.
+ * AOR contact set is missing from the cached set OR vice versa.
+ * Returns 0 only when the two sets are equal. Does NOT update the cache.
  *
  * Use for the synchronous optionsind path where the supplement writes
  * one body onto the 200 OK and doesn't fan out per-contact. Async
  * callers should use cisco_register_new_contacts() to get the delta
  * directly.
  */
-int cisco_register_address_changed(pjsip_msg *msg,
-	const char *endpoint_id, struct ao2_container *cache);
+int cisco_register_address_changed(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache);
 
 /*!
- * \brief Compute the list of Contact URIs in \a msg that are NOT yet
- *        in \a cache for this endpoint.
+ * \brief Compute the list of AOR Contact URIs that are NOT yet in
+ *        \a cache for this endpoint.
  *
  * Returns a NULL-terminated array of heap-allocated URI strings, sorted
  * by strcmp() order. Caller frees with cisco_uri_list_free(). On no-new-
  * contacts the function returns NULL (treat as empty list, not error).
  *
+ * URIs are sourced from ast_sip_location_retrieve_contacts_from_aor_list,
+ * matching the source the bulkupdate / unsolicited_blf fanout consumers
+ * use — this keeps the URI strings byte-identical across the gate and
+ * the iterator regardless of how the response hook's 200 OK Contact
+ * was formatted.
+ *
  * Cache is NOT mutated. Caller commits via
  * cisco_register_address_remember_uri() per URI AFTER the async work
  * for that URI has actually succeeded.
  */
-char **cisco_register_new_contacts(pjsip_msg *msg,
-	const char *endpoint_id, struct ao2_container *cache);
+char **cisco_register_new_contacts(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache);
 
 /*!
- * \brief Persist the entire current Contact set as "last fired".
+ * \brief Persist the entire current AOR Contact set as "last fired".
  *
  * Use for synchronous callers (optionsind) that succeed atomically over
  * the whole REGISTER response.
  */
-void cisco_register_address_remember(pjsip_msg *msg,
-	const char *endpoint_id, struct ao2_container *cache);
+void cisco_register_address_remember(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache);
 
 /*!
  * \brief Add a single URI to the per-endpoint cached set.

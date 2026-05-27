@@ -111,8 +111,7 @@ static void cisco_optionsind_outgoing_response(struct ast_sip_endpoint *endpoint
 		return;
 	}
 
-	cisco_register_address_remember(tdata->msg, endpoint_id,
-		optionsind_addr_cache);
+	cisco_register_address_remember(endpoint, optionsind_addr_cache);
 
 	ast_log(LOG_NOTICE, "cisco-optionsind: attached optionsind body to "
 		"REGISTER 200 OK for '%s'\n", endpoint_id);

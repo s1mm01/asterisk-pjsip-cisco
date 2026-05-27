@@ -79,46 +79,48 @@ static int uri_cmp_qsort(const void *a, const void *b)
 }
 
 /*!
- * \brief Read the REGISTER 200 OK's Contact set into a sorted
- *        NULL-terminated char** of heap-allocated URI strings.
- *        Caller frees with cisco_uri_list_free.
+ * \brief Read the endpoint's currently-registered Contact URIs from the
+ *        AOR into a sorted NULL-terminated char** of heap-allocated URI
+ *        strings. Caller frees with cisco_uri_list_free.
  *
- * Returns NULL on alloc failure, no contacts, or Contact: * (deregister).
+ * Sourcing from the AOR (rather than parsing the outgoing 200 OK
+ * Contact header) is deliberate: the bulkupdate / unsolicited_blf
+ * fanout consumers iterate ast_sip_contact* from the same AOR, and
+ * compare contact->uri against the strings the cache returned. Pulling
+ * from a different source — even though "the same" URI logically —
+ * means a different URI encoding (param order, port presence, instance
+ * params) and the strcmp inside the fanout helper misses every
+ * contact, silently dropping every REFER / NOTIFY. Observed across
+ * Asterisk 20 vs 22/23 in CI: same module .so, different URI strings
+ * out of pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR, ...) versus
+ * ast_sip_contact.uri, depending on the version's NAT / contact-
+ * rewriting plumbing.
+ *
+ * Returns NULL on alloc failure or no contacts.
  */
-static char **collect_response_contacts(pjsip_msg *msg)
+static char **collect_aor_contacts(struct ast_sip_endpoint *endpoint)
 {
-	pjsip_contact_hdr *contact;
+	struct ao2_container *contacts;
+	struct ao2_iterator iter;
+	struct ast_sip_contact *contact;
 	char **uris = NULL;
 	size_t n = 0;
 	size_t cap = 0;
-	char one[PJSIP_MAX_URL_SIZE];
 
-	if (!msg) {
+	if (!endpoint || ast_strlen_zero(endpoint->aors)) {
 		return NULL;
 	}
 
-	contact = (pjsip_contact_hdr *) pjsip_msg_find_hdr(msg,
-		PJSIP_H_CONTACT, NULL);
-	while (contact) {
-		int len;
+	contacts = ast_sip_location_retrieve_contacts_from_aor_list(endpoint->aors);
+	if (!contacts) {
+		return NULL;
+	}
 
-		if (contact->star) {
-			/* Deregister-all sentinel — nothing to remember. */
-			cisco_uri_list_free(uris);
-			return NULL;
-		}
-		if (contact->expires == 0) {
-			contact = (pjsip_contact_hdr *) pjsip_msg_find_hdr(msg,
-				PJSIP_H_CONTACT, contact->next);
-			continue;
-		}
-
-		len = pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR, contact->uri,
-			one, sizeof(one) - 1);
-		if (len > 0) {
+	iter = ao2_iterator_init(contacts, 0);
+	while ((contact = ao2_iterator_next(&iter))) {
+		if (!ast_strlen_zero(contact->uri)) {
 			char *copy;
 
-			one[len] = '\0';
 			if (n + 1 >= cap) {
 				char **bigger;
 				size_t newcap = cap ? cap * 2 : 4;
@@ -126,22 +128,28 @@ static char **collect_response_contacts(pjsip_msg *msg)
 				bigger = ast_realloc(uris, newcap * sizeof(*uris));
 				if (!bigger) {
 					cisco_uri_list_free(uris);
+					ao2_cleanup(contact);
+					ao2_iterator_destroy(&iter);
+					ao2_cleanup(contacts);
 					return NULL;
 				}
 				uris = bigger;
 				cap = newcap;
 			}
-			copy = ast_strdup(one);
+			copy = ast_strdup(contact->uri);
 			if (!copy) {
 				cisco_uri_list_free(uris);
+				ao2_cleanup(contact);
+				ao2_iterator_destroy(&iter);
+				ao2_cleanup(contacts);
 				return NULL;
 			}
 			uris[n++] = copy;
 		}
-
-		contact = (pjsip_contact_hdr *) pjsip_msg_find_hdr(msg,
-			PJSIP_H_CONTACT, contact->next);
+		ao2_cleanup(contact);
 	}
+	ao2_iterator_destroy(&iter);
+	ao2_cleanup(contacts);
 
 	if (n == 0) {
 		ast_free(uris);
@@ -319,42 +327,74 @@ struct ao2_container *cisco_addr_cache_alloc(void)
 
 struct ast_str *cisco_response_contacts_canonical(pjsip_msg *msg)
 {
-	char **uris;
+	pjsip_contact_hdr *contact;
 	struct ast_str *out;
-	size_t i, n;
+	int saw_any = 0;
+	char one[PJSIP_MAX_URL_SIZE];
 
-	uris = collect_response_contacts(msg);
-	if (!uris) {
+	if (!msg) {
 		return NULL;
 	}
 
 	out = ast_str_create(512);
 	if (!out) {
-		cisco_uri_list_free(uris);
 		return NULL;
 	}
 
-	n = uri_list_len(uris);
-	for (i = 0; i < n; i++) {
-		ast_str_append(&out, 0, "%s%s", i ? "|" : "", uris[i]);
+	contact = (pjsip_contact_hdr *) pjsip_msg_find_hdr(msg,
+		PJSIP_H_CONTACT, NULL);
+	while (contact) {
+		int len;
+
+		if (contact->star) {
+			ast_free(out);
+			return NULL;
+		}
+		if (contact->expires == 0) {
+			contact = (pjsip_contact_hdr *) pjsip_msg_find_hdr(msg,
+				PJSIP_H_CONTACT, contact->next);
+			continue;
+		}
+
+		len = pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR, contact->uri,
+			one, sizeof(one) - 1);
+		if (len > 0) {
+			one[len] = '\0';
+			if (saw_any) {
+				ast_str_append(&out, 0, "|");
+			}
+			ast_str_append(&out, 0, "%s", one);
+			saw_any = 1;
+		}
+
+		contact = (pjsip_contact_hdr *) pjsip_msg_find_hdr(msg,
+			PJSIP_H_CONTACT, contact->next);
 	}
 
-	cisco_uri_list_free(uris);
+	if (!saw_any) {
+		ast_free(out);
+		return NULL;
+	}
 	return out;
 }
 
-int cisco_register_address_changed(pjsip_msg *msg,
-	const char *endpoint_id, struct ao2_container *cache)
+int cisco_register_address_changed(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache)
 {
 	struct cisco_addr_cache_entry *entry;
 	char **current;
+	const char *endpoint_id;
 	int changed = 1;
 
-	if (!msg || !cache || ast_strlen_zero(endpoint_id)) {
+	if (!endpoint || !cache) {
+		return 1;
+	}
+	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	if (ast_strlen_zero(endpoint_id)) {
 		return 1;
 	}
 
-	current = collect_response_contacts(msg);
+	current = collect_aor_contacts(endpoint);
 	if (!current) {
 		return 1;
 	}
@@ -371,18 +411,23 @@ int cisco_register_address_changed(pjsip_msg *msg,
 	return changed;
 }
 
-char **cisco_register_new_contacts(pjsip_msg *msg,
-	const char *endpoint_id, struct ao2_container *cache)
+char **cisco_register_new_contacts(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache)
 {
 	struct cisco_addr_cache_entry *entry;
 	char **current;
 	char **delta;
+	const char *endpoint_id;
 
-	if (!msg || !cache || ast_strlen_zero(endpoint_id)) {
+	if (!endpoint || !cache) {
+		return NULL;
+	}
+	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	if (ast_strlen_zero(endpoint_id)) {
 		return NULL;
 	}
 
-	current = collect_response_contacts(msg);
+	current = collect_aor_contacts(endpoint);
 	if (!current) {
 		return NULL;
 	}
@@ -399,16 +444,21 @@ char **cisco_register_new_contacts(pjsip_msg *msg,
 	return delta;
 }
 
-void cisco_register_address_remember(pjsip_msg *msg,
-	const char *endpoint_id, struct ao2_container *cache)
+void cisco_register_address_remember(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache)
 {
 	struct cisco_addr_cache_entry *entry;
 	char **current;
+	const char *endpoint_id;
 
-	if (!msg || !cache || ast_strlen_zero(endpoint_id)) {
+	if (!endpoint || !cache) {
 		return;
 	}
-	current = collect_response_contacts(msg);
+	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	if (ast_strlen_zero(endpoint_id)) {
+		return;
+	}
+	current = collect_aor_contacts(endpoint);
 	if (!current) {
 		return;
 	}
@@ -552,15 +602,16 @@ int cisco_register_should_fire(struct ast_sip_endpoint *endpoint,
 	/* Refresh REGISTERs carry the same Contact set every ~60s; skip
 	 * the supplement's work unless something new appeared. Mirrors
 	 * the chan_sip patch's addrchanged guard, refined to per-contact
-	 * granularity. */
-	if (!cisco_register_address_changed(tdata->msg, endpoint_id,
-			addr_cache)) {
+	 * granularity. Reads URIs from the AOR (matching the source used
+	 * by the fanout consumers below) — see collect_aor_contacts for
+	 * why we deliberately avoid parsing tdata->msg here. */
+	if (!cisco_register_address_changed(endpoint, addr_cache)) {
 		return 0;
 	}
 
 	if (new_contacts_out) {
-		*new_contacts_out = cisco_register_new_contacts(tdata->msg,
-			endpoint_id, addr_cache);
+		*new_contacts_out = cisco_register_new_contacts(endpoint,
+			addr_cache);
 		if (!*new_contacts_out) {
 			/* address_changed returned 1 but the delta is empty —
 			 * possible only if a URI was removed without a deregister
