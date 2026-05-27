@@ -5,13 +5,15 @@
  * supplements (optionsind / bulkupdate / unsolicited_blf).
  *
  * Each REGISTER supplement keeps a per-module ao2 hash of "endpoint id
- * -> canonical-Contact-set last fired" so refresh REGISTERs (which
- * carry the same Contact every ~60s) become no-ops. Mirrors the
- * chan_sip cisco-usecallmanager patch's addrchanged guard in
- * parse_register_contact — see the section comment on
- * cisco_register_address_changed below for the lifecycle.
+ * -> set of Contact URIs we've successfully fired follow-up traffic to".
+ * Refresh REGISTERs (carrying the same Contact set every ~60s) become
+ * no-ops, AND when a new contact joins an endpoint that already has one
+ * registered, only the new contact gets the bootstrap REFER/NOTIFY —
+ * the already-bootstrapped contact is not re-pushed. Mirrors (with the
+ * per-contact refinement) the chan_sip cisco-usecallmanager patch's
+ * addrchanged guard in parse_register_contact.
  *
- * Bodies live in res/res/cisco_endpoint/register.c, compiled into
+ * Bodies live in res/cisco_endpoint/register.c, compiled into
  * res_pjsip_cisco_endpoint.so; other cisco_* modules resolve the
  * symbols at load time.
  *
@@ -52,40 +54,58 @@ int cisco_response_registers_contact(pjsip_msg *msg);
  * \name Address-change cache for REGISTER supplements
  *
  * The three REGISTER supplements (optionsind / bulkupdate /
- * unsolicited_blf) only need to re-fire their heavy follow-up traffic
- * when an endpoint's set of registered Contact URIs actually changed
- * (initial REGISTER, phone moved IP, NAT pinhole churn). Refresh
- * REGISTERs every ~60s carry the same Contact set and should be no-ops
- * — chan_sip's cisco-usecallmanager patch mirrors this via its
- * addrchanged guard in parse_register_contact.
+ * unsolicited_blf) only need to fire follow-up traffic at a contact
+ * the first time it appears in the endpoint's registered Contact set.
+ * Refresh REGISTERs every ~60s carry the same Contact set; a second
+ * device registering against the same endpoint (e.g. home phone joining
+ * an office phone) adds one URI without changing the existing one.
+ *
+ * Cache holds, per endpoint, the SET of Contact URIs to which the
+ * supplement has successfully delivered its follow-up traffic. The
+ * helpers below let a caller answer two questions cheaply:
+ *
+ *   1. Has the canonical Contact set changed at all (boolean)? — used
+ *      by the synchronous optionsind path where the supplement writes
+ *      a body onto the 200 OK itself, not per-contact follow-up.
+ *   2. Which Contact URIs are new since last fire (URI list)? — used by
+ *      the async bulkupdate / unsolicited_blf paths that fan out one
+ *      REFER / NOTIFY per registered contact.
  *
  * Cache is per-module, in-memory (NOT persistent astdb): asterisk
  * restart, module unload, and module reload all dump the cache,
  * guaranteeing the next REGISTER from each phone is correctly treated
- * as "changed" and re-bootstraps. The chan_sip patch gets this for
- * free because its peer->addr is in-memory; we have to be explicit
- * because the Cisco endpoint registry on PJSIP is sorcery-backed and
- * survives reloads.
+ * as "everything is new" and re-bootstraps. The chan_sip patch gets
+ * this for free because its peer->addr is in-memory; we have to be
+ * explicit because the Cisco endpoint registry on PJSIP is sorcery-
+ * backed and survives reloads.
  *
- * The cached canonical-contact-set string includes EVERY non-star,
- * non-expires=0 Contact in the REGISTER 200 OK, so the helper is
- * correct under max_contacts > 1 — a new or removed contact later in
- * the response changes the string and the supplement re-fires.
+ * Commit policy:
+ *   - optionsind (sync): on success, cisco_register_address_remember()
+ *     stores the whole current Contact set. Failure leaves the cache
+ *     untouched and the next refresh REGISTER retries.
+ *   - bulkupdate / unsolicited_blf (async): on per-contact success,
+ *     cisco_register_address_remember_uri() adds that one URI. Failure
+ *     for one contact leaves the others marked as fired and the failed
+ *     one untouched — the next refresh REGISTER finds it in the delta
+ *     and retries just that contact. Strictly better than the prior
+ *     all-or-nothing commit policy, which re-fanned-out every contact
+ *     on any partial failure.
  *
  * Lifecycle:
- *   cisco_register_address_changed()  - read-only check
- *   cisco_register_address_remember() - persist the new value on
- *                                       successful guarded operation
- *   cisco_register_address_forget()   - clear cache for an endpoint
- *                                       on its deregister, so the
- *                                       next re-register with the
- *                                       same Contact URI re-bootstraps
+ *   cisco_register_address_changed()      - read-only "anything new?"
+ *   cisco_register_new_contacts()         - delta list (caller frees)
+ *   cisco_register_address_remember()     - sync: commit whole set
+ *   cisco_register_address_remember_uri() - async: commit one URI
+ *   cisco_register_address_forget()       - clear cache for an endpoint
+ *                                           on its deregister, so the
+ *                                           next re-register (even with
+ *                                           the same Contact URI)
+ *                                           re-bootstraps
  *
  * Each supplement creates its own ao2 container via
  * cisco_addr_cache_alloc() at load_module time and ao2_cleanup()s it
- * at unload — keeping the three modules' caches independent of each
- * other (so they consistently skip-or-fire as a group regardless of
- * which supplement runs first).
+ * at unload — keeping the three modules' caches independent so each
+ * supplement's success/failure doesn't suppress the others.
  */
 /* @{ */
 
@@ -97,16 +117,29 @@ struct cisco_addr_cache_entry {
 	 * resulting in long-ID endpoints never hitting the cache and
 	 * re-firing every refresh REGISTER. */
 	char *endpoint_id;
-	char *contacts;  /* canonical sorted-by-insertion-order concat */
+	/* NULL-terminated array of heap-allocated URI strings, kept sorted
+	 * by strcmp() so set diff is a linear merge walk. May be NULL when
+	 * the entry was just created and no URI has been remembered yet. */
+	char **contacts;
 };
 
 struct ao2_container *cisco_addr_cache_alloc(void);
+
+/*!
+ * \brief Free a NULL-terminated array of heap-allocated URI strings as
+ *        returned by cisco_register_new_contacts(). Safe to call on NULL.
+ */
+void cisco_uri_list_free(char **uris);
 
 /*!
  * \brief Render the canonical contact-set string for the given REGISTER
  *        200 OK into a dynamic ast_str. Iterates every Contact header
  *        with expires > 0 (skips deregister rows). Caller frees with
  *        ast_free().
+ *
+ * Retained for callers that want a single-string representation (e.g.
+ * for logging or whole-set comparison); the cache itself works with
+ * the URI set, not this string.
  *
  * \retval NULL on alloc failure, no contacts, or Contact: * (deregister)
  */
@@ -116,40 +149,50 @@ struct ast_str *cisco_response_contacts_canonical(pjsip_msg *msg);
  * \brief Read-only: does the canonical Contact set in \a msg differ
  *        from what \a cache last remembered for this endpoint?
  *
- * Returns 1 (changed, caller should fire) when:
- *   - no cache entry exists for this endpoint, OR
- *   - the canonical Contact set differs from the cached one.
- * Returns 0 (unchanged, caller should skip) only when the canonical
- * Contact set is byte-identical to what was last remembered.
+ * Returns 1 (changed, caller should fire) when any URI in the current
+ * Contact set is missing from the cached set OR vice versa. Returns 0
+ * only when the two sets are equal. Does NOT update the cache.
  *
- * Does NOT update the cache. Caller commits via
- * cisco_register_address_remember() AFTER successfully performing the
- * guarded operation; that way a failed body-build or task-queue
- * doesn't leave a "we fired" mark that suppresses the next retry.
+ * Use for the synchronous optionsind path where the supplement writes
+ * one body onto the 200 OK and doesn't fan out per-contact. Async
+ * callers should use cisco_register_new_contacts() to get the delta
+ * directly.
  */
 int cisco_register_address_changed(pjsip_msg *msg,
 	const char *endpoint_id, struct ao2_container *cache);
 
 /*!
- * \brief Persist a precomputed canonical Contact string as "last fired".
+ * \brief Compute the list of Contact URIs in \a msg that are NOT yet
+ *        in \a cache for this endpoint.
  *
- * Use when the work being guarded is asynchronous: compute the canonical
- * string in the response hook (where the pjsip_msg is still alive), stash
- * it in the task data, and call this from inside the task only AFTER the
- * task has actually succeeded. Avoids both the "tdata->msg gone after the
- * hook returns" problem and the "remembered before async work succeeded"
- * problem.
+ * Returns a NULL-terminated array of heap-allocated URI strings, sorted
+ * by strcmp() order. Caller frees with cisco_uri_list_free(). On no-new-
+ * contacts the function returns NULL (treat as empty list, not error).
+ *
+ * Cache is NOT mutated. Caller commits via
+ * cisco_register_address_remember_uri() per URI AFTER the async work
+ * for that URI has actually succeeded.
  */
-void cisco_register_address_remember_str(const char *endpoint_id,
-	struct ao2_container *cache, const char *canonical);
+char **cisco_register_new_contacts(pjsip_msg *msg,
+	const char *endpoint_id, struct ao2_container *cache);
 
 /*!
- * \brief Convenience: compute the canonical Contact string from \a msg
- *        and remember it. Use for synchronous flows (optionsind) where
- *        the guarded operation completes before this call returns.
+ * \brief Persist the entire current Contact set as "last fired".
+ *
+ * Use for synchronous callers (optionsind) that succeed atomically over
+ * the whole REGISTER response.
  */
 void cisco_register_address_remember(pjsip_msg *msg,
 	const char *endpoint_id, struct ao2_container *cache);
+
+/*!
+ * \brief Add a single URI to the per-endpoint cached set.
+ *
+ * Idempotent: re-adding a URI already in the set is a no-op. Use from
+ * async per-contact success paths (bulkupdate / unsolicited_blf).
+ */
+void cisco_register_address_remember_uri(const char *endpoint_id,
+	struct ao2_container *cache, const char *uri);
 
 /*!
  * \brief Forget the cached Contact set for an endpoint. Call when the
@@ -169,25 +212,27 @@ void cisco_register_address_forget(const char *endpoint_id,
  *   1. Is it a 200 OK to a REGISTER?
  *   2. Is the endpoint flagged Cisco?
  *   3. Is it a deregister? If so, forget() the cache and skip.
- *   4. Has the canonical Contact set changed since last fire? If not, skip.
- *   5. (optional) Capture the canonical string for async paths that
- *      stash it in task data and commit after successful send.
+ *   4. Has the canonical Contact set added any URI since last fire? If
+ *      not, skip.
+ *   5. (optional) Capture the list of new URIs for async paths that
+ *      stash it in task data and commit per-URI after each successful
+ *      send.
  *
  * \param endpoint        the supplement's endpoint argument
  * \param tdata           the supplement's tdata argument
  * \param addr_cache      the per-supplement address-change cache
  * \param endpoint_id_out written on return-1; lifetime bound by \a endpoint
- * \param canonical_out   if non-NULL on entry, the canonical string is
- *                        captured and heap-allocated here (caller frees
- *                        with ast_free). Pass NULL for the synchronous
- *                        optionsind path that doesn't stash it.
+ * \param new_contacts_out if non-NULL on entry, the new-URI list is captured
+ *                        and heap-allocated here (caller frees with
+ *                        cisco_uri_list_free). Pass NULL for the synchronous
+ *                        optionsind path that doesn't need it.
  * \retval 1 caller should proceed with the supplement's body of work
  * \retval 0 caller should bail; the cache lifecycle (forget on dereg,
  *           skip on unchanged) has already been handled internally
  */
 int cisco_register_should_fire(struct ast_sip_endpoint *endpoint,
 	pjsip_tx_data *tdata, struct ao2_container *addr_cache,
-	const char **endpoint_id_out, char **canonical_out);
+	const char **endpoint_id_out, char ***new_contacts_out);
 /* @} */
 
 #endif /* _RES_PJSIP_CISCO_REGISTER_H */

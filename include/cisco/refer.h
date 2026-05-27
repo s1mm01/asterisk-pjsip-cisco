@@ -101,6 +101,42 @@ void cisco_endpoint_send_refer_to_all_contacts(
 	int *attempted_out, int *succeeded_out);
 
 /*!
+ * \brief Per-URI success notification, fired by
+ *        cisco_endpoint_send_refer_to_contact_uris() after each
+ *        ast_sip_send_request that returned success.
+ */
+typedef void (*cisco_uri_success_cb)(void *user_ctx, const char *uri);
+
+/*!
+ * \brief Send one REFER per URI in \a target_uris that resolves to a
+ *        currently registered contact on \a endpoint.
+ *
+ * Used by REGISTER-driven supplements (bulkupdate, unsolicited_blf) that
+ * compute the delta of "new since last fired" URIs via
+ * cisco_register_new_contacts() and want to fan out only to those URIs,
+ * leaving already-bootstrapped contacts undisturbed. URIs in \a target_uris
+ * that don't match any current contact are silently skipped — they may
+ * belong to a contact that expired between REGISTER and task dispatch,
+ * which is fine; the next REGISTER without that URI will quietly drop it.
+ *
+ * \param target_uris    NULL-terminated heap-allocated char ** (caller
+ *                       owns; the helper does not free it). Empty list
+ *                       (NULL or { NULL }) is a no-op.
+ * \param on_success     optional per-URI success callback, e.g.
+ *                       cisco_register_address_remember_uri.
+ * \param on_success_ctx opaque ctx passed to \a on_success unchanged.
+ *
+ * Other parameters mirror cisco_endpoint_send_refer_to_all_contacts().
+ */
+void cisco_endpoint_send_refer_to_contact_uris(
+	struct ast_sip_endpoint *endpoint,
+	char **target_uris,
+	const char *log_prefix, const char *cid_suffix, const char *subject,
+	cisco_refer_body_builder build, void *ctx,
+	cisco_uri_success_cb on_success, void *on_success_ctx,
+	int *attempted_out, int *succeeded_out);
+
+/*!
  * \brief Find the registered contact whose URI host:port matches the
  *        inbound rdata's source IP:port.
  *

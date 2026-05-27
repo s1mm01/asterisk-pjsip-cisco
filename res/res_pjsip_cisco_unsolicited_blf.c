@@ -66,6 +66,151 @@
 static struct ast_taskprocessor *unsolicited_serializer;
 static struct ao2_container *unsolicited_addr_cache;
 
+/* ---------------------------------------------------------------------
+ * Per-(endpoint, exten, contact) last-sent activity bitmask
+ *
+ * The state-change watcher fires on every Asterisk hint transition,
+ * including transitions that don't change what BLF watchers see on the
+ * wire (e.g. INUSE → INUSE|RINGING when alerting is suppressed by the
+ * engaged-line rule). Without this dedup we'd emit a NOTIFY with an
+ * identical body on every such intermediate transition.
+ *
+ * Cache stores the bits we most recently SUCCESSFULLY committed to the
+ * wire for each (endpoint_id, exten, contact_uri) triple. The
+ * REGISTER-fanout bootstrap path bypasses the dedup gate (a fresh
+ * contact has no prior wire state) so the very first NOTIFY for a new
+ * contact is always sent, establishing the cache value other state-
+ * change NOTIFYs dedup against.
+ *
+ * Failure paths (timeout / transport error / 4xx response) call
+ * blf_state_forget for the triple so the next state change re-sends
+ * — the cache only suppresses NOTIFYs whose body we have a reasonable
+ * belief the phone has already accepted.
+ * ------------------------------------------------------------------ */
+
+struct blf_state_cache_entry {
+	char *key;          /* "endpoint_id|exten|contact_uri" */
+	unsigned int bits;
+};
+
+static struct ao2_container *blf_state_cache;
+
+static int blf_state_cache_hash(const void *obj, const int flags)
+{
+	const struct blf_state_cache_entry *e;
+	const char *key;
+
+	switch (flags & OBJ_SEARCH_MASK) {
+	case OBJ_SEARCH_KEY:
+		key = obj;
+		break;
+	case OBJ_SEARCH_OBJECT:
+		e = obj;
+		key = e->key;
+		break;
+	default:
+		ast_assert(0);
+		return 0;
+	}
+	return ast_str_hash(key);
+}
+
+static int blf_state_cache_cmp(void *obj, void *arg, int flags)
+{
+	const struct blf_state_cache_entry *left = obj;
+	const char *right_key;
+
+	switch (flags & OBJ_SEARCH_MASK) {
+	case OBJ_SEARCH_OBJECT:
+		right_key = ((const struct blf_state_cache_entry *) arg)->key;
+		break;
+	case OBJ_SEARCH_KEY:
+		right_key = arg;
+		break;
+	default:
+		ast_assert(0);
+		return 0;
+	}
+	return strcmp(left->key, right_key) ? 0 : CMP_MATCH | CMP_STOP;
+}
+
+static void blf_state_cache_entry_destroy(void *obj)
+{
+	struct blf_state_cache_entry *e = obj;
+	ast_free(e->key);
+}
+
+/*!
+ * \brief Look up the last bits committed for (endpoint, exten, contact).
+ *        \retval 1 cache hit; *bits_out written
+ *        \retval 0 no entry
+ */
+static int blf_state_lookup(const char *endpoint_id, const char *exten,
+	const char *contact_uri, unsigned int *bits_out)
+{
+	char key[512];
+	struct blf_state_cache_entry *e;
+
+	if (!blf_state_cache || ast_strlen_zero(endpoint_id)
+		|| ast_strlen_zero(exten) || ast_strlen_zero(contact_uri)) {
+		return 0;
+	}
+
+	snprintf(key, sizeof(key), "%s|%s|%s", endpoint_id, exten, contact_uri);
+	e = ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY);
+	if (!e) {
+		return 0;
+	}
+	if (bits_out) {
+		*bits_out = e->bits;
+	}
+	ao2_cleanup(e);
+	return 1;
+}
+
+static void blf_state_remember(const char *endpoint_id, const char *exten,
+	const char *contact_uri, unsigned int bits)
+{
+	char key[512];
+	struct blf_state_cache_entry *e;
+
+	if (!blf_state_cache || ast_strlen_zero(endpoint_id)
+		|| ast_strlen_zero(exten) || ast_strlen_zero(contact_uri)) {
+		return;
+	}
+
+	snprintf(key, sizeof(key), "%s|%s|%s", endpoint_id, exten, contact_uri);
+
+	/* Replace any existing entry. */
+	ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
+
+	e = ao2_alloc(sizeof(*e), blf_state_cache_entry_destroy);
+	if (!e) {
+		return;
+	}
+	e->key  = ast_strdup(key);
+	e->bits = bits;
+	if (!e->key) {
+		ao2_cleanup(e);
+		return;
+	}
+	ao2_link(blf_state_cache, e);
+	ao2_cleanup(e);
+}
+
+static void blf_state_forget(const char *endpoint_id, const char *exten,
+	const char *contact_uri)
+{
+	char key[512];
+
+	if (!blf_state_cache || ast_strlen_zero(endpoint_id)
+		|| ast_strlen_zero(exten) || ast_strlen_zero(contact_uri)) {
+		return;
+	}
+	snprintf(key, sizeof(key), "%s|%s|%s", endpoint_id, exten, contact_uri);
+	ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
+}
+
 /*
  * Per-NOTIFY payload, kept alive across the whole transaction so the
  * response callback can identify which (endpoint, exten, contact)
@@ -111,6 +256,7 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			"endpoint='%s' contact='%s' (BLF buttons watching this "
 			"extension on this contact will not light)\n",
 			p->exten, p->endpoint_id, p->contact_uri);
+		blf_state_forget(p->endpoint_id, p->exten, p->contact_uri);
 		ao2_ref(p, -1);
 		return;
 	}
@@ -120,6 +266,7 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			"endpoint='%s' contact='%s' (BLF buttons watching this "
 			"extension on this contact will not light)\n",
 			p->exten, p->endpoint_id, p->contact_uri);
+		blf_state_forget(p->endpoint_id, p->exten, p->contact_uri);
 		ao2_ref(p, -1);
 		return;
 	}
@@ -136,6 +283,7 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			"endpoint='%s' contact='%s' (BLF buttons watching this "
 			"extension on this contact will not light)\n",
 			p->exten, status_code, p->endpoint_id, p->contact_uri);
+		blf_state_forget(p->endpoint_id, p->exten, p->contact_uri);
 	} else {
 		ast_debug(2,
 			"cisco-unsolicited-blf: NOTIFY for '%s' accepted (%d) — "
@@ -157,7 +305,8 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
  * module doesn't need to opt in.
  */
 static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
-	struct ast_sip_contact *contact, const char *exten, const char *context)
+	struct ast_sip_contact *contact, const char *exten, const char *context,
+	int use_dedup)
 {
 	pjsip_tx_data *tdata = NULL;
 	pj_str_t type;
@@ -166,9 +315,11 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 	char *xml = NULL;
 	char from_user[PJSIP_MAX_URL_SIZE];
 	char domain_buf[PJSIP_MAX_URL_SIZE];
+	const char *endpoint_id = ast_sorcery_object_get_id(endpoint);
 	const char *local_domain;
 	int exten_state;
 	int presence_state;
+	unsigned int bits;
 
 	/* Skip if the contact is known-dead. When a phone falls off the
 	 * network its registration lingers (~1h) and asterisk keeps the
@@ -223,6 +374,26 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 	}
 	if (presence_state < 0) {
 		presence_state = AST_PRESENCE_NOT_SET;
+	}
+
+	bits = cisco_blf_activity_bits(exten_state, presence_state);
+
+	/* Dedup gate (state-change path only). The REGISTER-fanout
+	 * bootstrap path passes use_dedup=0 so the very first NOTIFY for
+	 * a new contact always goes — the phone has no prior wire state
+	 * to dedup against, and the body it gets establishes the cache
+	 * value subsequent state-change NOTIFYs compare to. */
+	if (use_dedup) {
+		unsigned int last_bits;
+
+		if (blf_state_lookup(endpoint_id, exten, contact->uri, &last_bits)
+			&& last_bits == bits) {
+			ast_debug(2,
+				"cisco-unsolicited-blf: skipping NOTIFY for %s -> %s "
+				"(activity bits unchanged: 0x%x)\n",
+				exten, contact->uri, bits);
+			return 0;
+		}
 	}
 
 	if (ast_sip_create_request("NOTIFY", NULL, endpoint, NULL, contact, &tdata)) {
@@ -306,8 +477,7 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 			pjsip_tx_data_dec_ref(tdata);
 			return -1;
 		}
-		payload->endpoint_id = ast_strdup(
-			ast_sorcery_object_get_id(endpoint));
+		payload->endpoint_id = ast_strdup(endpoint_id);
 		payload->contact_uri = ast_strdup(contact->uri);
 		payload->exten = ast_strdup(exten);
 		if (!payload->endpoint_id || !payload->contact_uri
@@ -332,6 +502,11 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 		}
 	}
 
+	/* Remember the bits we've just put on the wire. The response
+	 * callback rolls this back on timeout / transport-error / >=300
+	 * status so a failed NOTIFY doesn't suppress the next retry. */
+	blf_state_remember(endpoint_id, exten, contact->uri, bits);
+
 	ast_debug(2,
 		"cisco-unsolicited-blf: unsolicited NOTIFY sent for %s@%s -> %s "
 		"(exten_state=0x%x presence=%s)\n",
@@ -353,10 +528,13 @@ struct unsolicited_task_data {
 	 * CSV under cisco->subscribe_context. */
 	char *extension;
 	char *context;
-	/* Canonical Contact-set captured at REGISTER time. When set, the
-	 * task commits to addr_cache after every per-(contact, exten) send
-	 * succeeds. NULL for the state-change path (not cache-gated). */
-	char *canonical;
+	/* REGISTER-fanout path: list of Contact URIs that are NEW since
+	 * the addr cache last remembered firing for this endpoint. Only
+	 * these URIs receive the bootstrap NOTIFY fanout; already-
+	 * bootstrapped contacts stay quiet. NULL for the state-change
+	 * path (which sends to every registered contact, since every
+	 * BLF watcher needs the state update). */
+	char **new_contacts;
 };
 
 static void unsolicited_task_data_destroy(void *obj)
@@ -364,8 +542,27 @@ static void unsolicited_task_data_destroy(void *obj)
 	struct unsolicited_task_data *data = obj;
 	ast_free(data->extension);
 	ast_free(data->context);
-	ast_free(data->canonical);
+	cisco_uri_list_free(data->new_contacts);
 	ao2_cleanup(data->endpoint);
+}
+
+/*!
+ * \brief Is \a uri in the NULL-terminated array \a uris? Used to filter
+ *        the REGISTER-fanout iteration down to the delta list.
+ */
+static int uri_in_list(const char *uri, char **uris)
+{
+	char **u;
+
+	if (!uris || !uri) {
+		return 0;
+	}
+	for (u = uris; *u; u++) {
+		if (!strcmp(*u, uri)) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static int unsolicited_send_task(void *obj)
@@ -375,9 +572,9 @@ static int unsolicited_send_task(void *obj)
 	struct cisco_endpoint *cisco = NULL;
 	const char *fanout_list;       /* CSV (REGISTER path) or single exten (state-change) */
 	const char *fanout_context;
-	int attempted = 0;
-	int succeeded = 0;
 	int is_fanout = (data->extension == NULL);
+	int total_attempted = 0;
+	int total_succeeded = 0;
 
 	endpoint_id = ast_sorcery_object_get_id(data->endpoint);
 
@@ -413,20 +610,36 @@ static int unsolicited_send_task(void *obj)
 		if (contacts) {
 			iter = ao2_iterator_init(contacts, 0);
 			while ((contact = ao2_iterator_next(&iter))) {
-				char *list_copy = ast_strdupa(fanout_list);
+				char *list_copy;
 				char *exten;
+				int per_contact_attempted = 0;
+				int per_contact_succeeded = 0;
+
+				/* REGISTER-fanout path is delta-filtered: only contacts
+				 * in data->new_contacts get the bootstrap NOTIFYs.
+				 * State-change path fans out to every contact (each BLF
+				 * watcher needs the update, not just the latest joiner). */
+				if (is_fanout && !uri_in_list(contact->uri, data->new_contacts)) {
+					ao2_cleanup(contact);
+					continue;
+				}
+
+				list_copy = ast_strdupa(fanout_list);
 				while ((exten = ast_strip(strsep(&list_copy, ",")))) {
 					if (ast_strlen_zero(exten)) {
 						continue;
 					}
-					/* Per-(contact, exten) pair: each pair owes one
-					 * NOTIFY. attempted++ before send so a failure
-					 * leaves attempted > succeeded and the cache
-					 * stays uncommitted. */
-					attempted++;
+					per_contact_attempted++;
+					/* REGISTER-fanout (is_fanout=1) is a bootstrap:
+					 * send unconditionally so the phone receives the
+					 * current state on a fresh contact. State-change
+					 * path (is_fanout=0) gates on the per-(endpoint,
+					 * exten, contact) activity bitmask to suppress
+					 * NOTIFYs whose body would be identical to the
+					 * last one sent. */
 					if (!send_unsolicited_notify(data->endpoint, contact,
-							exten, fanout_context)) {
-						succeeded++;
+							exten, fanout_context, !is_fanout)) {
+						per_contact_succeeded++;
 					}
 					/* Register the state-change watcher only on the
 					 * REGISTER-fanout entry — the state-change path
@@ -437,6 +650,24 @@ static int unsolicited_send_task(void *obj)
 							fanout_context);
 					}
 				}
+
+				/* Commit this contact's URI to the addr cache only when
+				 * every (contact, exten) NOTIFY for it actually went on
+				 * the wire. Per-contact commit means a partial failure
+				 * (say 2/3 contacts succeed) leaves the failed contact
+				 * uncached and the next REGISTER re-targets just that
+				 * one, rather than the prior all-or-nothing policy
+				 * which re-fanned-out every contact on any failure. */
+				if (is_fanout
+					&& per_contact_attempted > 0
+					&& per_contact_attempted == per_contact_succeeded) {
+					cisco_register_address_remember_uri(endpoint_id,
+						unsolicited_addr_cache, contact->uri);
+				}
+
+				total_attempted += per_contact_attempted;
+				total_succeeded += per_contact_succeeded;
+
 				ao2_cleanup(contact);
 			}
 			ao2_iterator_destroy(&iter);
@@ -446,22 +677,12 @@ static int unsolicited_send_task(void *obj)
 
 	ao2_cleanup(cisco);
 
-	/* Commit the address-change cache only when ALL intended NOTIFYs
-	 * (one per (contact, watched-exten) pair) actually went on the wire.
-	 * Partial success with max_contacts > 1 or a partially-resolvable
-	 * subscribe list would otherwise mark the endpoint "fired" and the
-	 * failed pair would never get retried until the Contact set
-	 * changed — cache is per-endpoint, so "all or nothing" is the only
-	 * correct policy. State-change path has data->canonical == NULL and
-	 * skips the commit entirely. */
-	if (attempted > 0 && attempted == succeeded && data->canonical) {
-		cisco_register_address_remember_str(endpoint_id,
-			unsolicited_addr_cache, data->canonical);
-	} else if (attempted != succeeded && data->canonical) {
+	if (is_fanout && total_attempted != total_succeeded) {
 		ast_log(LOG_NOTICE,
 			"cisco-unsolicited-blf: %d/%d NOTIFYs delivered for '%s' — "
-			"leaving address cache uncommitted so the next REGISTER retries\n",
-			succeeded, attempted, endpoint_id);
+			"failed contacts left uncached so the next REGISTER retries "
+			"just those\n",
+			total_succeeded, total_attempted, endpoint_id);
 	}
 
 	ao2_cleanup(data);
@@ -658,21 +879,21 @@ static void unsolicited_outgoing_response(struct ast_sip_endpoint *endpoint,
 	struct ast_sip_contact *contact, pjsip_tx_data *tdata)
 {
 	struct unsolicited_task_data *data;
-	char *canonical = NULL;
+	char **new_contacts = NULL;
 
 	if (!cisco_register_should_fire(endpoint, tdata, unsolicited_addr_cache,
-			NULL, &canonical)) {
+			NULL, &new_contacts)) {
 		return;
 	}
 
 	data = ao2_alloc(sizeof(*data), unsolicited_task_data_destroy);
 	if (!data) {
-		ast_free(canonical);
+		cisco_uri_list_free(new_contacts);
 		return;
 	}
 	ao2_ref(endpoint, +1);
-	data->endpoint  = endpoint;
-	data->canonical = canonical;  /* take ownership */
+	data->endpoint     = endpoint;
+	data->new_contacts = new_contacts;  /* take ownership */
 
 	if (ast_sip_push_task(unsolicited_serializer, unsolicited_send_task, data)) {
 		ast_log(LOG_WARNING, "cisco-unsolicited-blf: failed to queue task\n");
@@ -713,6 +934,18 @@ static int load_module(void)
 		return AST_MODULE_LOAD_DECLINE;
 	}
 
+	blf_state_cache = ao2_container_alloc_hash(AO2_ALLOC_OPT_LOCK_MUTEX, 0,
+		257, blf_state_cache_hash, NULL, blf_state_cache_cmp);
+	if (!blf_state_cache) {
+		ao2_cleanup(unsolicited_addr_cache);
+		unsolicited_addr_cache = NULL;
+		ao2_cleanup(ext_state_watchers);
+		ext_state_watchers = NULL;
+		ast_taskprocessor_unreference(unsolicited_serializer);
+		unsolicited_serializer = NULL;
+		return AST_MODULE_LOAD_DECLINE;
+	}
+
 	ast_sip_register_supplement(&unsolicited_supplement);
 	return AST_MODULE_LOAD_SUCCESS;
 }
@@ -726,6 +959,8 @@ static int unload_module(void)
 		return -1;
 	}
 	ast_sip_unregister_supplement(&unsolicited_supplement);
+	ao2_cleanup(blf_state_cache);
+	blf_state_cache = NULL;
 	ao2_cleanup(unsolicited_addr_cache);
 	unsolicited_addr_cache = NULL;
 	ao2_cleanup(ext_state_watchers);

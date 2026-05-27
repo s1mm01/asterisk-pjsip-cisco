@@ -215,17 +215,31 @@ static pjsip_msg_body *bulkupdate_make_body(pj_pool_t *pool, int dnd_enabled,
 /*! Container we pass to the task processor. */
 struct bulkupdate_task_data {
 	struct ast_sip_endpoint *endpoint;
-	/* Canonical Contact-set string captured in the response hook
-	 * (where tdata->msg is still alive). NULL for CLI-driven
-	 * invocations — those bypass the address-change cache entirely. */
-	char *canonical;
+	/* Sorted NULL-terminated list of Contact URIs that are NEW since
+	 * the address cache last remembered firing for this endpoint. The
+	 * REFER fanout targets only these URIs; already-bootstrapped
+	 * contacts are not re-pushed. NULL for CLI-driven invocations —
+	 * those bypass the address-change cache entirely and send to every
+	 * registered contact. */
+	char **new_contacts;
 };
 
 static void bulkupdate_task_data_destroy(void *obj)
 {
 	struct bulkupdate_task_data *data = obj;
-	ast_free(data->canonical);
+	cisco_uri_list_free(data->new_contacts);
 	ao2_cleanup(data->endpoint);
+}
+
+/*!
+ * \brief Per-URI success callback for the delta-filtered REFER fanout.
+ *        Commits one URI into the address cache as soon as
+ *        ast_sip_send_request returned success for it.
+ */
+static void bulkupdate_remember_uri(void *user_ctx, const char *uri)
+{
+	const char *endpoint_id = user_ctx;
+	cisco_register_address_remember_uri(endpoint_id, bulkupdate_addr_cache, uri);
 }
 
 struct bulkupdate_build_ctx {
@@ -347,28 +361,35 @@ static int bulkupdate_send_task(void *obj)
 			.hg_in        = hg_in,
 			.contacts_xml = ast_str_buffer(contacts_xml),
 		};
-		cisco_endpoint_send_refer_to_all_contacts(data->endpoint,
-			"cisco-bulkupdate", "cisco-bulkupdate", "REFER",
-			bulkupdate_build_adapter, &ctx, &attempted, &succeeded);
+		if (data->new_contacts) {
+			/* Cache-gated REGISTER path: target only the URIs that
+			 * are new since the last successful fanout. Each
+			 * succeeding URI is committed to the cache inline via
+			 * the per-URI callback — partial failure leaves the
+			 * other URIs marked fired and only the failed one
+			 * retries on the next REGISTER. */
+			cisco_endpoint_send_refer_to_contact_uris(data->endpoint,
+				data->new_contacts,
+				"cisco-bulkupdate", "cisco-bulkupdate", "REFER",
+				bulkupdate_build_adapter, &ctx,
+				bulkupdate_remember_uri, (void *) endpoint_id,
+				&attempted, &succeeded);
+		} else {
+			/* CLI-driven push: bypass the address cache; fan out
+			 * to every registered contact unconditionally. */
+			cisco_endpoint_send_refer_to_all_contacts(data->endpoint,
+				"cisco-bulkupdate", "cisco-bulkupdate", "REFER",
+				bulkupdate_build_adapter, &ctx, &attempted, &succeeded);
+		}
 	}
 
 	ast_free(contacts_xml);
 
-	/* Commit the address-change cache only when ALL intended REFERs
-	 * (one per registered contact) actually went on the wire. With
-	 * max_contacts > 1, a partial success would leave the cache marked
-	 * "fired" and the failed contact would never get retried until the
-	 * Contact set itself changed — caching per-endpoint, not per-contact,
-	 * makes "all or nothing" the only correct commit policy here.
-	 * Skip when data->canonical is NULL (CLI-triggered path — not
-	 * cache-gated; it's a forced push). */
-	if (attempted > 0 && attempted == succeeded && data->canonical) {
-		cisco_register_address_remember_str(endpoint_id,
-			bulkupdate_addr_cache, data->canonical);
-	} else if (attempted != succeeded) {
+	if (data->new_contacts && attempted != succeeded) {
 		ast_log(LOG_NOTICE,
-			"cisco-bulkupdate: %d/%d REFERs delivered for '%s' — leaving "
-			"address cache uncommitted so the next REGISTER retries\n",
+			"cisco-bulkupdate: %d/%d REFERs delivered for '%s' — failed "
+			"URIs left uncommitted in the address cache so the next "
+			"REGISTER retries just those\n",
 			succeeded, attempted, endpoint_id);
 	}
 
@@ -384,21 +405,21 @@ static void bulkupdate_outgoing_response(struct ast_sip_endpoint *endpoint,
 	struct ast_sip_contact *contact, pjsip_tx_data *tdata)
 {
 	struct bulkupdate_task_data *data;
-	char *canonical = NULL;
+	char **new_contacts = NULL;
 
 	if (!cisco_register_should_fire(endpoint, tdata, bulkupdate_addr_cache,
-			NULL, &canonical)) {
+			NULL, &new_contacts)) {
 		return;
 	}
 
 	data = ao2_alloc(sizeof(*data), bulkupdate_task_data_destroy);
 	if (!data) {
-		ast_free(canonical);
+		cisco_uri_list_free(new_contacts);
 		return;
 	}
 	ao2_ref(endpoint, +1);
-	data->endpoint  = endpoint;
-	data->canonical = canonical;  /* take ownership */
+	data->endpoint     = endpoint;
+	data->new_contacts = new_contacts;  /* take ownership */
 
 	if (ast_sip_push_task(bulkupdate_serializer, bulkupdate_send_task, data)) {
 		ast_log(LOG_WARNING, "cisco-bulkupdate: failed to queue task\n");

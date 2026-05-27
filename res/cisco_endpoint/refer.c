@@ -115,6 +115,70 @@ out:
 	}
 }
 
+void cisco_endpoint_send_refer_to_contact_uris(
+	struct ast_sip_endpoint *endpoint,
+	char **target_uris,
+	const char *log_prefix, const char *cid_suffix, const char *subject,
+	cisco_refer_body_builder build, void *ctx,
+	cisco_uri_success_cb on_success, void *on_success_ctx,
+	int *attempted_out, int *succeeded_out)
+{
+	struct ao2_container *contacts;
+	struct ao2_iterator iter;
+	struct ast_sip_contact *contact;
+	int attempted = 0;
+	int succeeded = 0;
+	char **u;
+
+	if (!endpoint || ast_strlen_zero(endpoint->aors) || !build || !target_uris) {
+		goto out;
+	}
+	if (!target_uris[0]) {
+		goto out;
+	}
+
+	contacts = ast_sip_location_retrieve_contacts_from_aor_list(endpoint->aors);
+	if (!contacts) {
+		goto out;
+	}
+
+	iter = ao2_iterator_init(contacts, 0);
+	while ((contact = ao2_iterator_next(&iter))) {
+		int targeted = 0;
+
+		for (u = target_uris; *u; u++) {
+			if (!strcmp(contact->uri, *u)) {
+				targeted = 1;
+				break;
+			}
+		}
+		if (!targeted) {
+			ao2_cleanup(contact);
+			continue;
+		}
+
+		attempted++;
+		if (!cisco_endpoint_send_refer_to_contact(endpoint, contact,
+				log_prefix, cid_suffix, subject, build, ctx)) {
+			succeeded++;
+			if (on_success) {
+				on_success(on_success_ctx, contact->uri);
+			}
+		}
+		ao2_cleanup(contact);
+	}
+	ao2_iterator_destroy(&iter);
+	ao2_cleanup(contacts);
+
+out:
+	if (attempted_out) {
+		*attempted_out = attempted;
+	}
+	if (succeeded_out) {
+		*succeeded_out = succeeded;
+	}
+}
+
 struct ast_sip_contact *cisco_endpoint_find_contact_from_rdata(
 	struct ast_sip_endpoint *endpoint, pjsip_rx_data *rdata)
 {

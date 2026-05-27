@@ -16,6 +16,30 @@
 #define CISCO_UNSOLICITED_BLF_PIDF_H
 
 /*
+ * Activity bitmask: the set of <e:activities> elements (plus the basic
+ * open/closed status) that cisco_blf_build_pidf would emit for the
+ * given (exten_state, presence_state) pair. Used by the state-change
+ * dedup gate in res_pjsip_cisco_unsolicited_blf.c to skip a NOTIFY
+ * whose wire body would be identical to the last one sent for the
+ * same (endpoint, exten, contact) triple — Asterisk fires the
+ * extension_state callback for transitions that don't change what
+ * BLF watchers see (e.g. INUSE → INUSE|RINGING when alerting is
+ * suppressed by the engaged-line rule).
+ *
+ * Single source of truth: cisco_blf_build_pidf() consumes the same
+ * helper so the dedup gate and the body it gates can never disagree.
+ */
+enum cisco_blf_activity_bit {
+	CISCO_BLF_BIT_ALERTING     = 1u << 0, /* <ce:alerting/> */
+	CISCO_BLF_BIT_ON_THE_PHONE = 1u << 1, /* <e:on-the-phone/> */
+	CISCO_BLF_BIT_BUSY         = 1u << 2, /* <e:busy/> */
+	CISCO_BLF_BIT_DND          = 1u << 3, /* <ce:dnd/> */
+	CISCO_BLF_BIT_BASIC_OPEN   = 1u << 4, /* <basic>open</basic> */
+};
+
+unsigned int cisco_blf_activity_bits(int exten_state, int presence_state);
+
+/*
  * Build a Cisco-flavoured PIDF body for the given extension state.
  *
  *   exten / domain   - SIP URI components for the watched extension.
