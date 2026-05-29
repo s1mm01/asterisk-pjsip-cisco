@@ -21,12 +21,53 @@
 
 #include "cisco/refer.h"
 
-int cisco_endpoint_send_refer_to_contact(
+/*
+ * Optional per-REFER delivery confirmation. When a caller wants to know
+ * the phone actually accepted a REFER (not just that the request was
+ * queued), we carry a copy of the caller's key and the target URI across
+ * the async transaction and fire the callback from the response handler
+ * on a 2xx. Copies are mandatory: the callback can run long after the
+ * originating task — and the strings it borrowed — have gone.
+ */
+struct refer_confirm_payload {
+	cisco_uri_confirm_cb cb;
+	char *key;
+	char *uri;
+};
+
+static void refer_confirm_payload_destroy(void *obj)
+{
+	struct refer_confirm_payload *p = obj;
+	ast_free(p->key);
+	ast_free(p->uri);
+}
+
+static void refer_confirm_response_cb(void *token, pjsip_event *e)
+{
+	struct refer_confirm_payload *p = token;
+
+	/* Commit only on a 2xx final response. A timeout, transport error,
+	 * or >=300 rejection leaves the URI unconfirmed so the caller's cache
+	 * stays uncommitted and the next REGISTER re-targets it. */
+	if (e->body.tsx_state.type == PJSIP_EVENT_RX_MSG
+		&& e->body.tsx_state.tsx) {
+		int status_code = e->body.tsx_state.tsx->status_code;
+
+		if (status_code >= 200 && status_code < 300 && p->cb) {
+			p->cb(p->key, p->uri);
+		}
+	}
+	ao2_ref(p, -1);
+}
+
+static int send_refer_to_contact_impl(
 	struct ast_sip_endpoint *endpoint, struct ast_sip_contact *contact,
 	const char *log_prefix, const char *cid_suffix, const char *subject,
-	cisco_refer_body_builder build, void *ctx)
+	cisco_refer_body_builder build, void *ctx,
+	cisco_uri_confirm_cb on_confirm, const char *confirm_key)
 {
 	pjsip_tx_data *tdata = NULL;
+	struct refer_confirm_payload *confirm = NULL;
 	char cid[64];
 	char refer_to[128];
 
@@ -58,15 +99,46 @@ int cisco_endpoint_send_refer_to_contact(
 		return -1;
 	}
 
-	if (ast_sip_send_request(tdata, NULL, endpoint, NULL, NULL)) {
+	if (on_confirm) {
+		confirm = ao2_alloc(sizeof(*confirm), refer_confirm_payload_destroy);
+		if (!confirm) {
+			pjsip_tx_data_dec_ref(tdata);
+			return -1;
+		}
+		confirm->cb  = on_confirm;
+		confirm->key = ast_strdup(confirm_key);
+		confirm->uri = ast_strdup(contact->uri);
+		if (!confirm->key || !confirm->uri) {
+			ao2_ref(confirm, -1);
+			pjsip_tx_data_dec_ref(tdata);
+			return -1;
+		}
+	}
+
+	if (ast_sip_send_request(tdata, NULL, endpoint, confirm,
+			confirm ? refer_confirm_response_cb : NULL)) {
 		ast_log(LOG_WARNING, "%s: %s send failed for %s\n",
 			log_prefix, subject, contact->uri);
+		/* tdata is consumed by send_request; with no transaction created
+		 * the response cb never fires, so release the token here. */
+		if (confirm) {
+			ao2_ref(confirm, -1);
+		}
 		return -1;
 	}
 
 	ast_log(LOG_NOTICE, "%s: %s sent to %s\n",
 		log_prefix, subject, contact->uri);
 	return 0;
+}
+
+int cisco_endpoint_send_refer_to_contact(
+	struct ast_sip_endpoint *endpoint, struct ast_sip_contact *contact,
+	const char *log_prefix, const char *cid_suffix, const char *subject,
+	cisco_refer_body_builder build, void *ctx)
+{
+	return send_refer_to_contact_impl(endpoint, contact, log_prefix,
+		cid_suffix, subject, build, ctx, NULL, NULL);
 }
 
 void cisco_endpoint_send_refer_to_all_contacts(
@@ -120,7 +192,7 @@ void cisco_endpoint_send_refer_to_contact_uris(
 	char **target_uris,
 	const char *log_prefix, const char *cid_suffix, const char *subject,
 	cisco_refer_body_builder build, void *ctx,
-	cisco_uri_success_cb on_success, void *on_success_ctx,
+	cisco_uri_confirm_cb on_confirm, const char *confirm_key,
 	int *attempted_out, int *succeeded_out)
 {
 	struct ao2_container *contacts;
@@ -157,13 +229,14 @@ void cisco_endpoint_send_refer_to_contact_uris(
 			continue;
 		}
 
+		/* succeeded counts REFERs that went on the wire; on_confirm fires
+		 * later, from the transaction-response handler, only for those
+		 * the phone answers 2xx — see refer_confirm_response_cb. */
 		attempted++;
-		if (!cisco_endpoint_send_refer_to_contact(endpoint, contact,
-				log_prefix, cid_suffix, subject, build, ctx)) {
+		if (!send_refer_to_contact_impl(endpoint, contact,
+				log_prefix, cid_suffix, subject, build, ctx,
+				on_confirm, confirm_key)) {
 			succeeded++;
-			if (on_success) {
-				on_success(on_success_ctx, contact->uri);
-			}
 		}
 		ao2_cleanup(contact);
 	}

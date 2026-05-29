@@ -232,13 +232,15 @@ static void bulkupdate_task_data_destroy(void *obj)
 }
 
 /*!
- * \brief Per-URI success callback for the delta-filtered REFER fanout.
- *        Commits one URI into the address cache as soon as
- *        ast_sip_send_request returned success for it.
+ * \brief Per-URI confirmation callback for the delta-filtered REFER fanout.
+ *        Fired from the REFER transaction-response handler on a 2xx, so a
+ *        contact is marked bootstrapped only once the phone has actually
+ *        accepted its REFER. The line config the REFER carries has no other
+ *        retry path, so committing on send (rather than on 2xx) would
+ *        strand a rejected contact until its Contact set next changed.
  */
-static void bulkupdate_remember_uri(void *user_ctx, const char *uri)
+static void bulkupdate_confirm_uri(const char *endpoint_id, const char *uri)
 {
-	const char *endpoint_id = user_ctx;
 	cisco_register_address_remember_uri(endpoint_id, bulkupdate_addr_cache, uri);
 }
 
@@ -363,16 +365,16 @@ static int bulkupdate_send_task(void *obj)
 		};
 		if (data->new_contacts) {
 			/* Cache-gated REGISTER path: target only the URIs that
-			 * are new since the last successful fanout. Each
-			 * succeeding URI is committed to the cache inline via
-			 * the per-URI callback — partial failure leaves the
-			 * other URIs marked fired and only the failed one
-			 * retries on the next REGISTER. */
+			 * are new since the last successful fanout. Each URI is
+			 * committed to the cache only once the phone answers its
+			 * REFER 2xx (via the per-URI confirm callback) — a contact
+			 * that fails to queue or is later rejected stays out of the
+			 * cache and the next REGISTER re-targets just that one. */
 			cisco_endpoint_send_refer_to_contact_uris(data->endpoint,
 				data->new_contacts,
 				"cisco-bulkupdate", "cisco-bulkupdate", "REFER",
 				bulkupdate_build_adapter, &ctx,
-				bulkupdate_remember_uri, (void *) endpoint_id,
+				bulkupdate_confirm_uri, endpoint_id,
 				&attempted, &succeeded);
 		} else {
 			/* CLI-driven push: bypass the address cache; fan out
@@ -387,9 +389,11 @@ static int bulkupdate_send_task(void *obj)
 
 	if (data->new_contacts && attempted != succeeded) {
 		ast_log(LOG_NOTICE,
-			"cisco-bulkupdate: %d/%d REFERs delivered for '%s' — failed "
-			"URIs left uncommitted in the address cache so the next "
-			"REGISTER retries just those\n",
+			"cisco-bulkupdate: %d/%d REFERs queued for '%s' — URIs that "
+			"failed to queue stay uncommitted in the address cache so the "
+			"next REGISTER re-targets them. Note a queued REFER is only "
+			"committed once the phone answers 2xx, so a later rejection "
+			"also leaves its URI uncommitted for retry\n",
 			succeeded, attempted, endpoint_id);
 	}
 

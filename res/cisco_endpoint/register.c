@@ -133,6 +133,14 @@ static char **collect_aor_contacts(struct ast_sip_endpoint *endpoint)
 					ao2_cleanup(contacts);
 					return NULL;
 				}
+				/* Zero the freshly-grown tail so the array stays
+				 * NULL-terminated at every step. The strdup-failure
+				 * path below frees via cisco_uri_list_free(), which
+				 * walks to the first NULL; without this it would read
+				 * the uninitialised slots ast_realloc() just handed
+				 * back and free garbage. */
+				memset(&bigger[cap], 0,
+					(newcap - cap) * sizeof(*bigger));
 				uris = bigger;
 				cap = newcap;
 			}
@@ -378,90 +386,74 @@ struct ast_str *cisco_response_contacts_canonical(pjsip_msg *msg)
 	return out;
 }
 
-int cisco_register_address_changed(struct ast_sip_endpoint *endpoint,
-	struct ao2_container *cache)
+/*!
+ * \brief Diff an already-collected current Contact set against the cached
+ *        set for \a endpoint_id in a single locked pass.
+ *
+ * \a current is borrowed (not freed here). On return:
+ *   - *changed_out (if non-NULL) is 1 when the current set differs from the
+ *     cached set, or when no entry exists, or when \a current is NULL; 0
+ *     only when the two sets are equal.
+ *   - *delta_out (if non-NULL) is a fresh sorted NULL-terminated list of the
+ *     URIs present in current but not in the cached set, or NULL for an
+ *     empty delta. Caller frees with cisco_uri_list_free().
+ *
+ * Answering both questions from one AOR snapshot under one ao2_lock keeps
+ * the "did anything change?" gate and the "what's new?" delta mutually
+ * consistent and avoids re-reading the AOR for each.
+ */
+static void cisco_addr_diff(struct ao2_container *cache,
+	const char *endpoint_id, char **current,
+	int *changed_out, char ***delta_out)
 {
 	struct cisco_addr_cache_entry *entry;
-	char **current;
-	const char *endpoint_id;
-	int changed = 1;
 
-	if (!endpoint || !cache) {
-		return 1;
+	if (changed_out) {
+		*changed_out = 1;
 	}
-	endpoint_id = ast_sorcery_object_get_id(endpoint);
-	if (ast_strlen_zero(endpoint_id)) {
-		return 1;
+	if (delta_out) {
+		*delta_out = NULL;
 	}
 
-	current = collect_aor_contacts(endpoint);
+	/* No current contacts (vanished between the 200 OK and the AOR read,
+	 * or the AOR lookup failed) → treat as changed with an empty delta. */
 	if (!current) {
-		return 1;
-	}
-
-	entry = ao2_find(cache, endpoint_id, OBJ_SEARCH_KEY);
-	if (entry) {
-		if (uri_lists_equal(current, entry->contacts)) {
-			changed = 0;
-		}
-		ao2_cleanup(entry);
-	}
-
-	cisco_uri_list_free(current);
-	return changed;
-}
-
-char **cisco_register_new_contacts(struct ast_sip_endpoint *endpoint,
-	struct ao2_container *cache)
-{
-	struct cisco_addr_cache_entry *entry;
-	char **current;
-	char **delta;
-	const char *endpoint_id;
-
-	if (!endpoint || !cache) {
-		return NULL;
-	}
-	endpoint_id = ast_sorcery_object_get_id(endpoint);
-	if (ast_strlen_zero(endpoint_id)) {
-		return NULL;
-	}
-
-	current = collect_aor_contacts(endpoint);
-	if (!current) {
-		return NULL;
+		return;
 	}
 
 	entry = ao2_find(cache, endpoint_id, OBJ_SEARCH_KEY);
 	if (!entry) {
-		/* Whole current set is new. */
-		return current;
+		/* No cache entry — the whole current set is new. */
+		if (delta_out) {
+			*delta_out = uri_list_diff(current, NULL);
+		}
+		return;
 	}
 
-	delta = uri_list_diff(current, entry->contacts);
-	cisco_uri_list_free(current);
+	/* cisco_register_address_remember_uri() reallocs and shifts
+	 * entry->contacts in place under the entry lock from the async fanout
+	 * serializer; take the same lock so these reads never walk a
+	 * reallocated or half-shifted array. */
+	ao2_lock(entry);
+	if (changed_out) {
+		*changed_out = uri_lists_equal(current, entry->contacts) ? 0 : 1;
+	}
+	if (delta_out) {
+		*delta_out = uri_list_diff(current, entry->contacts);
+	}
+	ao2_unlock(entry);
 	ao2_cleanup(entry);
-	return delta;
 }
 
-void cisco_register_address_remember(struct ast_sip_endpoint *endpoint,
-	struct ao2_container *cache)
+/*!
+ * \brief Install \a current (taking ownership) as the cached Contact set
+ *        for \a endpoint_id, replacing any existing entry. Frees \a current
+ *        on allocation failure.
+ */
+static void cisco_addr_store(struct ao2_container *cache,
+	const char *endpoint_id, char **current)
 {
 	struct cisco_addr_cache_entry *entry;
-	char **current;
-	const char *endpoint_id;
-
-	if (!endpoint || !cache) {
-		return;
-	}
-	endpoint_id = ast_sorcery_object_get_id(endpoint);
-	if (ast_strlen_zero(endpoint_id)) {
-		return;
-	}
-	current = collect_aor_contacts(endpoint);
-	if (!current) {
-		return;
-	}
 
 	ao2_find(cache, endpoint_id,
 		OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
@@ -479,6 +471,68 @@ void cisco_register_address_remember(struct ast_sip_endpoint *endpoint,
 	}
 	ao2_link(cache, entry);
 	ao2_cleanup(entry);
+}
+
+int cisco_register_address_changed(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache)
+{
+	char **current;
+	const char *endpoint_id;
+	int changed;
+
+	if (!endpoint || !cache) {
+		return 1;
+	}
+	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	if (ast_strlen_zero(endpoint_id)) {
+		return 1;
+	}
+
+	current = collect_aor_contacts(endpoint);
+	cisco_addr_diff(cache, endpoint_id, current, &changed, NULL);
+	cisco_uri_list_free(current);
+	return changed;
+}
+
+char **cisco_register_new_contacts(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache)
+{
+	char **current;
+	char **delta;
+	const char *endpoint_id;
+
+	if (!endpoint || !cache) {
+		return NULL;
+	}
+	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	if (ast_strlen_zero(endpoint_id)) {
+		return NULL;
+	}
+
+	current = collect_aor_contacts(endpoint);
+	cisco_addr_diff(cache, endpoint_id, current, NULL, &delta);
+	cisco_uri_list_free(current);
+	return delta;
+}
+
+void cisco_register_address_remember(struct ast_sip_endpoint *endpoint,
+	struct ao2_container *cache)
+{
+	char **current;
+	const char *endpoint_id;
+
+	if (!endpoint || !cache) {
+		return;
+	}
+	endpoint_id = ast_sorcery_object_get_id(endpoint);
+	if (ast_strlen_zero(endpoint_id)) {
+		return;
+	}
+	current = collect_aor_contacts(endpoint);
+	if (!current) {
+		return;
+	}
+	cisco_addr_store(cache, endpoint_id, current);
 }
 
 void cisco_register_address_remember_uri(const char *endpoint_id,
@@ -604,21 +658,61 @@ int cisco_register_should_fire(struct ast_sip_endpoint *endpoint,
 	 * the chan_sip patch's addrchanged guard, refined to per-contact
 	 * granularity. Reads URIs from the AOR (matching the source used
 	 * by the fanout consumers below) — see collect_aor_contacts for
-	 * why we deliberately avoid parsing tdata->msg here. */
-	if (!cisco_register_address_changed(endpoint, addr_cache)) {
-		return 0;
-	}
+	 * why we deliberately avoid parsing tdata->msg here.
+	 *
+	 * Collect the AOR set once and answer both "did anything change?"
+	 * and "what's new?" from that single snapshot. */
+	{
+		char **current = collect_aor_contacts(endpoint);
+		int changed;
+		char **delta = NULL;
 
-	if (new_contacts_out) {
-		*new_contacts_out = cisco_register_new_contacts(endpoint,
-			addr_cache);
-		if (!*new_contacts_out) {
-			/* address_changed returned 1 but the delta is empty —
-			 * possible only if a URI was removed without a deregister
-			 * (e.g. a contact expired). No new contacts to push at;
-			 * skip the fanout. */
+		cisco_addr_diff(addr_cache, endpoint_id, current, &changed,
+			new_contacts_out ? &delta : NULL);
+
+		if (!changed) {
+			cisco_uri_list_free(current);
 			return 0;
 		}
+
+		if (new_contacts_out) {
+			if (!delta) {
+				/* Changed but the delta is empty — a URI left the AOR
+				 * without a deregister (a contact expired, or one of
+				 * several registered devices dropped while another
+				 * remains). Nothing new to fan out, but the removed URI
+				 * is still marked as fired in the cache. Re-sync the
+				 * cache to the snapshot we already have so that if the
+				 * removed contact later re-registers with the same URI
+				 * it shows up in the delta and re-bootstraps, rather
+				 * than matching the stale cached set and being skipped
+				 * as an unchanged refresh. */
+				if (current) {
+					cisco_addr_store(addr_cache, endpoint_id, current);
+				}
+				return 0;
+			}
+			*new_contacts_out = delta;  /* take ownership */
+
+			/* Mixed add+remove: alongside the new URIs in the delta, one
+			 * or more cached URIs may have left the AOR. Prune the cache
+			 * to the survivors (cached ∩ current = current \ delta) so a
+			 * removed contact that later re-registers with the same URI
+			 * reappears in the delta and re-bootstraps, instead of
+			 * lingering as a stale cached entry that masks it — the same
+			 * hazard the empty-delta re-sync above guards against. The
+			 * delta's new URIs are deliberately NOT committed here; they
+			 * enter the cache only once their fanned-out REFER/NOTIFY is
+			 * confirmed 2xx (commit-on-confirm). uri_list_diff() returns
+			 * NULL for an empty intersection, which stores an empty entry
+			 * — harmless, it diffs identically to no entry. */
+			if (current) {
+				cisco_addr_store(addr_cache, endpoint_id,
+					uri_list_diff(current, delta));
+			}
+		}
+
+		cisco_uri_list_free(current);
 	}
 
 	if (endpoint_id_out) {

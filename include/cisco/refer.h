@@ -101,11 +101,17 @@ void cisco_endpoint_send_refer_to_all_contacts(
 	int *attempted_out, int *succeeded_out);
 
 /*!
- * \brief Per-URI success notification, fired by
- *        cisco_endpoint_send_refer_to_contact_uris() after each
- *        ast_sip_send_request that returned success.
+ * \brief Per-URI delivery confirmation, fired by
+ *        cisco_endpoint_send_refer_to_contact_uris() from the REFER's
+ *        transaction-response handler ONLY on a 2xx final response (not
+ *        merely when the request was queued).
+ *
+ * Both \a key and \a uri are copies owned by the send helper and remain
+ * valid for the duration of the call — the callback may run long after
+ * the originating task (and the strings it borrowed) are gone, so do not
+ * retain the pointers past the call.
  */
-typedef void (*cisco_uri_success_cb)(void *user_ctx, const char *uri);
+typedef void (*cisco_uri_confirm_cb)(const char *key, const char *uri);
 
 /*!
  * \brief Send one REFER per URI in \a target_uris that resolves to a
@@ -122,9 +128,13 @@ typedef void (*cisco_uri_success_cb)(void *user_ctx, const char *uri);
  * \param target_uris    NULL-terminated heap-allocated char ** (caller
  *                       owns; the helper does not free it). Empty list
  *                       (NULL or { NULL }) is a no-op.
- * \param on_success     optional per-URI success callback, e.g.
- *                       cisco_register_address_remember_uri.
- * \param on_success_ctx opaque ctx passed to \a on_success unchanged.
+ * \param on_confirm     optional per-URI confirmation callback, fired on a
+ *                       2xx from the phone (see \ref cisco_uri_confirm_cb).
+ *                       Pass NULL to send without delivery tracking.
+ * \param confirm_key    opaque-to-the-helper string handed back to
+ *                       \a on_confirm as its \a key (e.g. the endpoint id).
+ *                       Copied internally, so its lifetime need not outlive
+ *                       this call.
  *
  * Other parameters mirror cisco_endpoint_send_refer_to_all_contacts().
  */
@@ -133,7 +143,7 @@ void cisco_endpoint_send_refer_to_contact_uris(
 	char **target_uris,
 	const char *log_prefix, const char *cid_suffix, const char *subject,
 	cisco_refer_body_builder build, void *ctx,
-	cisco_uri_success_cb on_success, void *on_success_ctx,
+	cisco_uri_confirm_cb on_confirm, const char *confirm_key,
 	int *attempted_out, int *succeeded_out);
 
 /*!

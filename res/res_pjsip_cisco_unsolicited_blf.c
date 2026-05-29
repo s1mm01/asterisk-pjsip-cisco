@@ -75,17 +75,19 @@ static struct ao2_container *unsolicited_addr_cache;
  * engaged-line rule). Without this dedup we'd emit a NOTIFY with an
  * identical body on every such intermediate transition.
  *
- * Cache stores the bits we most recently SUCCESSFULLY committed to the
- * wire for each (endpoint_id, exten, contact_uri) triple. The
- * REGISTER-fanout bootstrap path bypasses the dedup gate (a fresh
- * contact has no prior wire state) so the very first NOTIFY for a new
- * contact is always sent, establishing the cache value other state-
- * change NOTIFYs dedup against.
+ * Cache stores the bits the phone has CONFIRMED on the wire for each
+ * (endpoint_id, exten, contact_uri) triple. The REGISTER-fanout
+ * bootstrap path bypasses the dedup gate (a fresh contact has no prior
+ * wire state) so the very first NOTIFY for a new contact is always sent,
+ * establishing the cache value other state-change NOTIFYs dedup against.
  *
- * Failure paths (timeout / transport error / 4xx response) call
- * blf_state_forget for the triple so the next state change re-sends
- * — the cache only suppresses NOTIFYs whose body we have a reasonable
- * belief the phone has already accepted.
+ * Commit timing: the bits are remembered from the transaction-response
+ * callback ONLY on a 2xx (blf_state_remember in unsolicited_response_cb),
+ * never optimistically at send time. A NOTIFY that times out, hits a
+ * transport error, or is rejected (>=300) leaves the cache untouched, so
+ * the next state change re-sends. Committing on confirmation rather than
+ * on send avoids the race where a failed NOTIFY's optimistic mark would
+ * suppress an identical-bits retry before the failure rollback landed.
  * ------------------------------------------------------------------ */
 
 struct blf_state_cache_entry {
@@ -141,14 +143,34 @@ static void blf_state_cache_entry_destroy(void *obj)
 }
 
 /*!
- * \brief Look up the last bits committed for (endpoint, exten, contact).
+ * \brief Build the "endpoint_id|exten|contact_uri" cache key on the heap.
+ *
+ * Heap-allocated (not a fixed stack buffer) because ast_sip_contact.uri
+ * is unbounded — NAT-rewrite params, +sip.instance, and long hosts can
+ * push a single URI past any fixed size, and a truncated key would let
+ * two distinct contacts collide and suppress each other's NOTIFYs.
+ * Caller frees with ast_free(). Returns NULL on alloc failure.
+ */
+static char *blf_state_key(const char *endpoint_id, const char *exten,
+	const char *contact_uri)
+{
+	char *key;
+
+	if (ast_asprintf(&key, "%s|%s|%s", endpoint_id, exten, contact_uri) < 0) {
+		return NULL;
+	}
+	return key;
+}
+
+/*!
+ * \brief Look up the last bits confirmed for (endpoint, exten, contact).
  *        \retval 1 cache hit; *bits_out written
  *        \retval 0 no entry
  */
 static int blf_state_lookup(const char *endpoint_id, const char *exten,
 	const char *contact_uri, unsigned int *bits_out)
 {
-	char key[512];
+	char *key;
 	struct blf_state_cache_entry *e;
 
 	if (!blf_state_cache || ast_strlen_zero(endpoint_id)
@@ -156,8 +178,12 @@ static int blf_state_lookup(const char *endpoint_id, const char *exten,
 		return 0;
 	}
 
-	snprintf(key, sizeof(key), "%s|%s|%s", endpoint_id, exten, contact_uri);
+	key = blf_state_key(endpoint_id, exten, contact_uri);
+	if (!key) {
+		return 0;
+	}
 	e = ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY);
+	ast_free(key);
 	if (!e) {
 		return 0;
 	}
@@ -171,7 +197,7 @@ static int blf_state_lookup(const char *endpoint_id, const char *exten,
 static void blf_state_remember(const char *endpoint_id, const char *exten,
 	const char *contact_uri, unsigned int bits)
 {
-	char key[512];
+	char *key;
 	struct blf_state_cache_entry *e;
 
 	if (!blf_state_cache || ast_strlen_zero(endpoint_id)
@@ -179,36 +205,23 @@ static void blf_state_remember(const char *endpoint_id, const char *exten,
 		return;
 	}
 
-	snprintf(key, sizeof(key), "%s|%s|%s", endpoint_id, exten, contact_uri);
+	key = blf_state_key(endpoint_id, exten, contact_uri);
+	if (!key) {
+		return;
+	}
 
 	/* Replace any existing entry. */
 	ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
 
 	e = ao2_alloc(sizeof(*e), blf_state_cache_entry_destroy);
 	if (!e) {
+		ast_free(key);
 		return;
 	}
-	e->key  = ast_strdup(key);
+	e->key  = key;       /* take ownership */
 	e->bits = bits;
-	if (!e->key) {
-		ao2_cleanup(e);
-		return;
-	}
 	ao2_link(blf_state_cache, e);
 	ao2_cleanup(e);
-}
-
-static void blf_state_forget(const char *endpoint_id, const char *exten,
-	const char *contact_uri)
-{
-	char key[512];
-
-	if (!blf_state_cache || ast_strlen_zero(endpoint_id)
-		|| ast_strlen_zero(exten) || ast_strlen_zero(contact_uri)) {
-		return;
-	}
-	snprintf(key, sizeof(key), "%s|%s|%s", endpoint_id, exten, contact_uri);
-	ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
 }
 
 /*
@@ -234,6 +247,10 @@ struct unsolicited_notify_payload {
 	char *endpoint_id;
 	char *contact_uri;
 	char *exten;
+	/* Activity bitmask of the body we put on the wire. Committed to the
+	 * dedup cache by the response callback only on a 2xx — see the
+	 * blf_state cache header comment for why commit-on-confirm. */
+	unsigned int bits;
 };
 
 static void unsolicited_notify_payload_destroy(void *obj)
@@ -256,7 +273,6 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			"endpoint='%s' contact='%s' (BLF buttons watching this "
 			"extension on this contact will not light)\n",
 			p->exten, p->endpoint_id, p->contact_uri);
-		blf_state_forget(p->endpoint_id, p->exten, p->contact_uri);
 		ao2_ref(p, -1);
 		return;
 	}
@@ -266,7 +282,6 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			"endpoint='%s' contact='%s' (BLF buttons watching this "
 			"extension on this contact will not light)\n",
 			p->exten, p->endpoint_id, p->contact_uri);
-		blf_state_forget(p->endpoint_id, p->exten, p->contact_uri);
 		ao2_ref(p, -1);
 		return;
 	}
@@ -283,8 +298,13 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 			"endpoint='%s' contact='%s' (BLF buttons watching this "
 			"extension on this contact will not light)\n",
 			p->exten, status_code, p->endpoint_id, p->contact_uri);
-		blf_state_forget(p->endpoint_id, p->exten, p->contact_uri);
 	} else {
+		/* Confirmed on the wire — commit the bits so subsequent
+		 * identical-body state changes for this triple dedup against
+		 * them. Done here (not at send time) so a failed NOTIFY never
+		 * leaves a mark that suppresses its own retry. */
+		blf_state_remember(p->endpoint_id, p->exten, p->contact_uri,
+			p->bits);
 		ast_debug(2,
 			"cisco-unsolicited-blf: NOTIFY for '%s' accepted (%d) — "
 			"endpoint='%s' contact='%s'\n",
@@ -480,6 +500,7 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 		payload->endpoint_id = ast_strdup(endpoint_id);
 		payload->contact_uri = ast_strdup(contact->uri);
 		payload->exten = ast_strdup(exten);
+		payload->bits = bits;
 		if (!payload->endpoint_id || !payload->contact_uri
 			|| !payload->exten) {
 			ao2_ref(payload, -1);
@@ -502,10 +523,9 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 		}
 	}
 
-	/* Remember the bits we've just put on the wire. The response
-	 * callback rolls this back on timeout / transport-error / >=300
-	 * status so a failed NOTIFY doesn't suppress the next retry. */
-	blf_state_remember(endpoint_id, exten, contact->uri, bits);
+	/* The bits are committed to the dedup cache by the response
+	 * callback on a confirmed 2xx, not here — a NOTIFY that later
+	 * fails must not leave a mark that suppresses its own retry. */
 
 	ast_debug(2,
 		"cisco-unsolicited-blf: unsolicited NOTIFY sent for %s@%s -> %s "
@@ -657,7 +677,19 @@ static int unsolicited_send_task(void *obj)
 				 * (say 2/3 contacts succeed) leaves the failed contact
 				 * uncached and the next REGISTER re-targets just that
 				 * one, rather than the prior all-or-nothing policy
-				 * which re-fanned-out every contact on any failure. */
+				 * which re-fanned-out every contact on any failure.
+				 *
+				 * Deliberately commit on send (transaction queued), NOT
+				 * on the NOTIFY's 2xx — unlike bulkupdate's REFER, which
+				 * confirms before committing because its line config has
+				 * no other delivery path. Here the state-change watcher
+				 * is the retry mechanism: a contact whose bootstrap
+				 * NOTIFY is queued but later rejected simply re-receives
+				 * the current state on its next hint transition (the
+				 * dedup cache, committed on 2xx, won't suppress it since
+				 * the rejected body was never confirmed). Aggregating
+				 * per-(contact, exten) 2xx confirmations here would add
+				 * async accounting for no behavioural gain. */
 				if (is_fanout
 					&& per_contact_attempted > 0
 					&& per_contact_attempted == per_contact_succeeded) {
