@@ -345,7 +345,9 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 static void ensure_ext_state_watcher(const char *endpoint_id,
 	const char *extension, const char *context);
 static int blf_state_change_should_send(const char *endpoint_id,
-	const char *exten, const char *context);
+	const char *exten, const char *context, unsigned int *bits_out);
+static void blf_state_change_commit(const char *endpoint_id,
+	const char *exten, unsigned int bits);
 
 struct unsolicited_task_data {
 	struct ast_sip_endpoint *endpoint;
@@ -380,6 +382,7 @@ static int unsolicited_send_task(void *obj)
 	int attempted = 0;
 	int succeeded = 0;
 	int is_fanout = (data->extension == NULL);
+	unsigned int change_bits = 0;   /* state-change path: bits to commit */
 
 	endpoint_id = ast_sorcery_object_get_id(data->endpoint);
 
@@ -405,11 +408,12 @@ static int unsolicited_send_task(void *obj)
 		fanout_context = data->context;
 
 		/* Dedup on the serializer: skip the whole fanout when this
-		 * transition's wire body matches what we last sent for this
+		 * transition's wire body matches what we last committed for this
 		 * (endpoint, exten). All contacts get the same body, so one
-		 * decision covers them. */
+		 * decision covers them. The baseline is advanced after the
+		 * fanout, not here — see blf_state_change_commit below. */
 		if (!blf_state_change_should_send(endpoint_id, data->extension,
-				data->context)) {
+				data->context, &change_bits)) {
 			ast_debug(2,
 				"cisco-unsolicited-blf: skipping NOTIFY fanout for "
 				"%s@%s -> %s (activity bits unchanged)\n",
@@ -478,6 +482,16 @@ static int unsolicited_send_task(void *obj)
 			"cisco-unsolicited-blf: %d/%d NOTIFYs delivered for '%s' — "
 			"leaving address cache uncommitted so the next REGISTER retries\n",
 			succeeded, attempted, endpoint_id);
+	}
+
+	/* State-change path: advance the dedup baseline only now that the
+	 * fanout has run, and only if every NOTIFY actually queued. A partial
+	 * failure leaves last_bits unchanged so the next transition carrying
+	 * the same body re-sends to the contact that missed it instead of
+	 * being deduped away. Same all-or-nothing rule as the address cache
+	 * above. */
+	if (!is_fanout && attempted > 0 && attempted == succeeded) {
+		blf_state_change_commit(endpoint_id, data->extension, change_bits);
 	}
 
 	ao2_cleanup(data);
@@ -615,52 +629,88 @@ static unsigned int blf_current_bits(const char *context, const char *exten)
 }
 
 /*!
- * \brief State-change dedup gate. \retval 1 the activity bits for
- *        (context, exten) differ from what was last pushed to this
- *        (endpoint, exten) — and last_bits is advanced to match; \retval 0
- *        the bits are unchanged, so an identical NOTIFY can be skipped.
+ * \brief State-change dedup peek. \retval 1 the activity bits for
+ *        (context, exten) differ from what was last committed for this
+ *        (endpoint, exten) — caller should fan out, then call
+ *        blf_state_change_commit() with \a *bits_out once the NOTIFYs are
+ *        actually queued; \retval 0 the bits are unchanged, skip the fanout.
+ *        \a *bits_out always receives the freshly-computed bits.
  *
- * Both the hint re-query and the compare-and-update run here on the single
- * unsolicited serializer. That fixes two things versus sampling in the
- * callback: last_bits stays consistent with the body the task is about to
- * send (both read current state at the same point on the same thread), and
- * the read-modify-write is race-free because every writer of last_bits —
- * this gate and the REGISTER-fanout reset in ensure_ext_state_watcher() —
- * runs on this one serializer. Sampling in the callback let overlapping
- * device-state / presence callbacks commit stale bits out of order, which
- * could record last_bits as idle while the wire showed DND and then
- * wrongly suppress the real clearing NOTIFY.
+ * Deliberately does NOT advance last_bits here. A transition whose fanout
+ * then fails (UNAVAILABLE contact, body-alloc error, ast_sip_send_request
+ * failure) must not move the baseline — otherwise the next transition
+ * carrying the same body (e.g. INUSE -> INUSE|RINGING, which collapse to
+ * identical bits, exactly what this dedup targets) would be suppressed even
+ * though a phone never received that state. Commit happens only after a
+ * clean fanout, mirroring the address cache's all-or-nothing policy.
+ *
+ * Both the hint re-query and the compare run here on the single unsolicited
+ * serializer, NOT the extension_state callback: that keeps last_bits
+ * consistent with the body the task sends, and makes the peek/commit pair
+ * race-free since every writer of last_bits — commit and the REGISTER-fanout
+ * reset in ensure_ext_state_watcher() — runs on this one serializer, in
+ * order. Sampling in the callback let overlapping device-state / presence
+ * callbacks commit stale bits out of order, wrongly suppressing a clearing
+ * NOTIFY.
  */
-static int blf_state_change_should_send(const char *endpoint_id,
-	const char *exten, const char *context)
+static struct ext_state_watcher *blf_state_watcher_find(const char *endpoint_id,
+	const char *exten)
 {
 	struct ext_state_watcher *w;
 	char *key;
-	unsigned int bits;
-	int send;
 
 	if (!ext_state_watchers || ast_strlen_zero(endpoint_id)
 		|| ast_strlen_zero(exten)) {
-		return 1;   /* no dedup state — never suppress */
+		return NULL;
 	}
 	if (ast_asprintf(&key, "%s|%s", endpoint_id, exten) < 0) {
-		return 1;
+		return NULL;
 	}
 	w = ao2_find(ext_state_watchers, key, OBJ_SEARCH_KEY);
 	ast_free(key);
+	return w;
+}
+
+static int blf_state_change_should_send(const char *endpoint_id,
+	const char *exten, const char *context, unsigned int *bits_out)
+{
+	struct ext_state_watcher *w = blf_state_watcher_find(endpoint_id, exten);
+	unsigned int bits;
+	int send;
+
+	*bits_out = 0;
 	if (!w) {
-		return 1;   /* watcher gone — send rather than wrongly skip */
+		return 1;   /* no watcher / no dedup state — never suppress */
 	}
 
 	bits = blf_current_bits(context, exten);
 	ao2_lock(w);
 	send = (w->last_bits != bits);
-	if (send) {
-		w->last_bits = bits;
-	}
 	ao2_unlock(w);
 	ao2_cleanup(w);
+	*bits_out = bits;
 	return send;
+}
+
+/*!
+ * \brief Advance the dedup baseline for (endpoint, exten) to \a bits, called
+ *        from the task only after its NOTIFYs have actually queued. Pairs
+ *        with blf_state_change_should_send(); see it for why the baseline
+ *        moves on confirmed-queue rather than at decision time, and why the
+ *        peek/commit split is race-free on the serializer.
+ */
+static void blf_state_change_commit(const char *endpoint_id,
+	const char *exten, unsigned int bits)
+{
+	struct ext_state_watcher *w = blf_state_watcher_find(endpoint_id, exten);
+
+	if (!w) {
+		return;
+	}
+	ao2_lock(w);
+	w->last_bits = bits;
+	ao2_unlock(w);
+	ao2_cleanup(w);
 }
 
 /*!
