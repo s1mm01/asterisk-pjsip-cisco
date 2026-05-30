@@ -455,9 +455,6 @@ static void cisco_addr_store(struct ao2_container *cache,
 {
 	struct cisco_addr_cache_entry *entry;
 
-	ao2_find(cache, endpoint_id,
-		OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
-
 	entry = ao2_alloc(sizeof(*entry), cisco_addr_cache_entry_destroy);
 	if (!entry) {
 		cisco_uri_list_free(current);
@@ -469,7 +466,20 @@ static void cisco_addr_store(struct ao2_container *cache,
 		ao2_cleanup(entry);
 		return;
 	}
-	ao2_link(cache, entry);
+
+	/* Replace any existing entry as one atomic step: hold the container
+	 * lock across the unlink+link so a concurrent
+	 * cisco_register_address_remember_uri() (which runs from the async
+	 * fanout / REFER-confirm threads, not this REGISTER-response thread)
+	 * can't slip its own find→link into the gap and leave two entries
+	 * for the same endpoint_id in the container. ao2 hash containers do
+	 * not dedup keys, so a duplicate would persist and make the diff
+	 * gate read an arbitrary one of the two. */
+	ao2_lock(cache);
+	ao2_find(cache, endpoint_id,
+		OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA | OBJ_NOLOCK);
+	ao2_link_flags(cache, entry, OBJ_NOLOCK);
+	ao2_unlock(cache);
 	ao2_cleanup(entry);
 }
 
@@ -548,31 +558,46 @@ void cisco_register_address_remember_uri(const char *endpoint_id,
 		return;
 	}
 
-	entry = ao2_find(cache, endpoint_id, OBJ_SEARCH_KEY);
+	/* Find-or-create under the container lock so the find→link gap can't
+	 * race a concurrent store()/remember_uri() into a duplicate entry for
+	 * the same endpoint_id (see cisco_addr_store). The existing-entry
+	 * branch only takes a +1 ref here and does its in-place mutation
+	 * under the entry lock below, after dropping the container lock. */
+	ao2_lock(cache);
+	entry = ao2_find(cache, endpoint_id, OBJ_SEARCH_KEY | OBJ_NOLOCK);
 	if (!entry) {
-		/* First URI for this endpoint — create the entry. */
+		/* First URI for this endpoint — create and link the entry while
+		 * still holding the container lock. */
 		entry = ao2_alloc(sizeof(*entry), cisco_addr_cache_entry_destroy);
 		if (!entry) {
+			ao2_unlock(cache);
 			return;
 		}
 		entry->endpoint_id = ast_strdup(endpoint_id);
 		entry->contacts    = ast_calloc(2, sizeof(*entry->contacts));
 		if (!entry->endpoint_id || !entry->contacts) {
+			ao2_unlock(cache);
 			ao2_cleanup(entry);
 			return;
 		}
 		entry->contacts[0] = ast_strdup(uri);
 		entry->contacts[1] = NULL;
 		if (!entry->contacts[0]) {
+			ao2_unlock(cache);
 			ao2_cleanup(entry);
 			return;
 		}
-		ao2_link(cache, entry);
+		ao2_link_flags(cache, entry, OBJ_NOLOCK);
+		ao2_unlock(cache);
 		ao2_cleanup(entry);
 		return;
 	}
+	ao2_unlock(cache);
 
-	/* Idempotent on existing URI; sorted insert otherwise. */
+	/* Idempotent on existing URI; sorted insert otherwise. A concurrent
+	 * store() may unlink this entry while we hold only the entry lock —
+	 * a benign lost update: the dropped URI simply reappears in the next
+	 * REGISTER's delta and re-bootstraps. */
 	ao2_lock(entry);
 	n = uri_list_len(entry->contacts);
 	insert_at = (int) n;
