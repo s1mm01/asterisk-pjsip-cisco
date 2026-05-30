@@ -340,10 +340,12 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 	return 0;
 }
 
-/* Forward declaration — the watcher registry is defined below the
- * REGISTER fanout task that calls into it. */
+/* Forward declarations — the watcher registry (and its dedup gate) is
+ * defined below the REGISTER fanout task that calls into it. */
 static void ensure_ext_state_watcher(const char *endpoint_id,
 	const char *extension, const char *context);
+static int blf_state_change_should_send(const char *endpoint_id,
+	const char *exten, const char *context);
 
 struct unsolicited_task_data {
 	struct ast_sip_endpoint *endpoint;
@@ -401,6 +403,20 @@ static int unsolicited_send_task(void *obj)
 		 * strsep loop below trivially passes a single token through. */
 		fanout_list    = data->extension;
 		fanout_context = data->context;
+
+		/* Dedup on the serializer: skip the whole fanout when this
+		 * transition's wire body matches what we last sent for this
+		 * (endpoint, exten). All contacts get the same body, so one
+		 * decision covers them. */
+		if (!blf_state_change_should_send(endpoint_id, data->extension,
+				data->context)) {
+			ast_debug(2,
+				"cisco-unsolicited-blf: skipping NOTIFY fanout for "
+				"%s@%s -> %s (activity bits unchanged)\n",
+				data->extension, data->context, endpoint_id);
+			ao2_cleanup(data);
+			return 0;
+		}
 	}
 
 	{
@@ -569,10 +585,13 @@ static void ext_state_watcher_destroy(void *obj)
  *
  * Computed from the same two sources send_unsolicited_notify reads — the
  * extension's hint state and its presence component — so the dedup gate
- * below and the body that gate guards are derived identically and can't
- * disagree. (info->presence_state isn't reliable here: the watcher uses
- * the plain, non-extended ast_extension_state_add, which doesn't carry
- * presence in the callback info.)
+ * and the body it guards are derived identically and can't disagree.
+ *
+ * Called from the serializer task, NOT from the extension_state callback:
+ * pbx.c invokes watchers with no hint locks held and explicitly warns
+ * against re-entering the hint subsystem from there, so the re-query lives
+ * on the deferred task path (the same context send_unsolicited_notify
+ * already queries from).
  */
 static unsigned int blf_current_bits(const char *context, const char *exten)
 {
@@ -596,6 +615,55 @@ static unsigned int blf_current_bits(const char *context, const char *exten)
 }
 
 /*!
+ * \brief State-change dedup gate. \retval 1 the activity bits for
+ *        (context, exten) differ from what was last pushed to this
+ *        (endpoint, exten) — and last_bits is advanced to match; \retval 0
+ *        the bits are unchanged, so an identical NOTIFY can be skipped.
+ *
+ * Both the hint re-query and the compare-and-update run here on the single
+ * unsolicited serializer. That fixes two things versus sampling in the
+ * callback: last_bits stays consistent with the body the task is about to
+ * send (both read current state at the same point on the same thread), and
+ * the read-modify-write is race-free because every writer of last_bits —
+ * this gate and the REGISTER-fanout reset in ensure_ext_state_watcher() —
+ * runs on this one serializer. Sampling in the callback let overlapping
+ * device-state / presence callbacks commit stale bits out of order, which
+ * could record last_bits as idle while the wire showed DND and then
+ * wrongly suppress the real clearing NOTIFY.
+ */
+static int blf_state_change_should_send(const char *endpoint_id,
+	const char *exten, const char *context)
+{
+	struct ext_state_watcher *w;
+	char *key;
+	unsigned int bits;
+	int send;
+
+	if (!ext_state_watchers || ast_strlen_zero(endpoint_id)
+		|| ast_strlen_zero(exten)) {
+		return 1;   /* no dedup state — never suppress */
+	}
+	if (ast_asprintf(&key, "%s|%s", endpoint_id, exten) < 0) {
+		return 1;
+	}
+	w = ao2_find(ext_state_watchers, key, OBJ_SEARCH_KEY);
+	ast_free(key);
+	if (!w) {
+		return 1;   /* watcher gone — send rather than wrongly skip */
+	}
+
+	bits = blf_current_bits(context, exten);
+	ao2_lock(w);
+	send = (w->last_bits != bits);
+	if (send) {
+		w->last_bits = bits;
+	}
+	ao2_unlock(w);
+	ao2_cleanup(w);
+	return send;
+}
+
+/*!
  * \brief Hint state changed for a watched extension — enqueue an
  *        unsolicited NOTIFY for the (endpoint, exten) pair through the
  *        shared task path. Sets extension / context so the task picks
@@ -607,31 +675,14 @@ static int ext_state_cb(const char *context, const char *exten,
 	struct ext_state_watcher *w = data;
 	struct ast_sip_endpoint *endpoint;
 	struct unsolicited_task_data *task_data;
-	unsigned int bits;
 
 	(void) info;
 
-	/* Dedup gate: skip transitions whose wire body is identical to the
-	 * one we last pushed for this (endpoint, exten). Asterisk fires this
-	 * callback on every hint transition, many of which collapse to the
-	 * same activity bits (engaged-line alerting suppression, presence
-	 * sub-state flaps). Recorded optimistically — a NOTIFY that later
-	 * fails isn't rolled back, so a failed update waits for the next
-	 * genuine state change rather than retrying. BLF is soft state; the
-	 * simplicity is worth that bounded staleness. */
-	bits = blf_current_bits(context, exten);
-	ao2_lock(w);
-	if (w->last_bits == bits) {
-		ao2_unlock(w);
-		ast_debug(2,
-			"cisco-unsolicited-blf: skipping NOTIFY for %s@%s -> %s "
-			"(activity bits unchanged: 0x%x)\n",
-			exten, context, w->endpoint_id, bits);
-		return 0;
-	}
-	w->last_bits = bits;
-	ao2_unlock(w);
-
+	/* Just queue the task — the activity-bits dedup happens inside it, on
+	 * the serializer (see blf_state_change_should_send). Deciding here
+	 * would mean re-querying the hint subsystem from the callback, which
+	 * pbx.c warns against, and sampling off-serializer reopens the
+	 * stale-overwrite race between overlapping callbacks. */
 	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "endpoint",
 		w->endpoint_id);
 	if (!endpoint) {
