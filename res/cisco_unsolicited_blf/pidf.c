@@ -20,6 +20,45 @@
  * standalone (no pjsip header pull-in just to reach PJSIP_MAX_URL_SIZE). */
 #define CISCO_PIDF_URI_BUFSIZE 256
 
+unsigned int cisco_blf_activity_bits(int exten_state, int presence_state)
+{
+	unsigned int bits = 0;
+
+	/* Deliberate divergence from the chan_sip cisco-usecallmanager patch
+	 * (channels/sip/request.c:556-568), which emits <ce:alerting/>
+	 * whenever RINGING is set even if the line is already INUSE/BUSY/
+	 * ONHOLD or the watched extension is DND. That makes a busy line
+	 * flash 'alerting' on every other phone's BLF when a second call
+	 * arrives, which reads as "available to pick up" to operators —
+	 * the opposite of what's actually true. Suppress <ce:alerting/>
+	 * when the line is already engaged or DND so the BLF stays on
+	 * on-the-phone / dnd through the whole second-call setup. */
+	if (exten_state & (AST_EXTENSION_INUSE
+			| AST_EXTENSION_ONHOLD
+			| AST_EXTENSION_BUSY)) {
+		bits |= CISCO_BLF_BIT_ON_THE_PHONE;
+	} else if (presence_state != AST_PRESENCE_DND
+		&& (exten_state & AST_EXTENSION_RINGING)) {
+		bits |= CISCO_BLF_BIT_ALERTING;
+	}
+	if (exten_state & AST_EXTENSION_BUSY) {
+		bits |= CISCO_BLF_BIT_BUSY;
+	}
+	/* DND propagates via presence state, not device state — chan_sip's
+	 * sip_devicestate (channel_tech.c:1490+) and PJSIP's equivalent
+	 * both ignore peer->do_not_disturb. Mirror what
+	 * res_pjsip_cisco_pidf_body_generator does for in-dialog NOTIFYs:
+	 * emit Cisco's private <ce:dnd/> activity when the watched
+	 * extension's hint reports AST_PRESENCE_DND. */
+	if (presence_state == AST_PRESENCE_DND) {
+		bits |= CISCO_BLF_BIT_DND;
+	}
+	if (exten_state != AST_EXTENSION_UNAVAILABLE) {
+		bits |= CISCO_BLF_BIT_BASIC_OPEN;
+	}
+	return bits;
+}
+
 char *cisco_blf_build_pidf(const char *exten, const char *domain,
 	int exten_state, int presence_state)
 {
@@ -27,6 +66,7 @@ char *cisco_blf_build_pidf(const char *exten, const char *domain,
 	char *result;
 	char exten_xml[CISCO_PIDF_URI_BUFSIZE];
 	char domain_xml[CISCO_PIDF_URI_BUFSIZE];
+	unsigned int bits;
 
 	out = ast_str_create(1024);
 	if (!out) {
@@ -35,6 +75,8 @@ char *cisco_blf_build_pidf(const char *exten, const char *domain,
 
 	ast_sip_sanitize_xml(exten, exten_xml, sizeof(exten_xml));
 	ast_sip_sanitize_xml(domain, domain_xml, sizeof(domain_xml));
+
+	bits = cisco_blf_activity_bits(exten_state, presence_state);
 
 	ast_str_set(&out, 0,
 		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -47,31 +89,15 @@ char *cisco_blf_build_pidf(const char *exten, const char *domain,
 		"    <e:activities>\n",
 		exten_xml, domain_xml);
 
-	/* Deliberate divergence from the chan_sip cisco-usecallmanager patch
-	 * (channels/sip/request.c:556-568), which emits <ce:alerting/>
-	 * whenever RINGING is set even if the line is already INUSE/BUSY/
-	 * ONHOLD or the watched extension is DND. That makes a busy line
-	 * flash 'alerting' on every other phone's BLF when a second call
-	 * arrives, which reads as "available to pick up" to operators —
-	 * the opposite of what's actually true. Suppress <ce:alerting/>
-	 * when the line is already engaged or DND so the BLF stays on
-	 * on-the-phone / dnd through the whole second-call setup. */
-	if (exten_state & (AST_EXTENSION_INUSE | AST_EXTENSION_ONHOLD | AST_EXTENSION_BUSY)) {
+	if (bits & CISCO_BLF_BIT_ON_THE_PHONE) {
 		ast_str_append(&out, 0, "      <e:on-the-phone/>\n");
-	} else if (presence_state != AST_PRESENCE_DND
-		&& (exten_state & AST_EXTENSION_RINGING)) {
+	} else if (bits & CISCO_BLF_BIT_ALERTING) {
 		ast_str_append(&out, 0, "      <ce:alerting/>\n");
 	}
-	if (exten_state & AST_EXTENSION_BUSY) {
+	if (bits & CISCO_BLF_BIT_BUSY) {
 		ast_str_append(&out, 0, "      <e:busy/>\n");
 	}
-	/* DND propagates via presence state, not device state — chan_sip's
-	 * sip_devicestate (channel_tech.c:1490+) and PJSIP's equivalent
-	 * both ignore peer->do_not_disturb. Mirror what
-	 * res_pjsip_cisco_pidf_body_generator does for in-dialog NOTIFYs:
-	 * emit Cisco's private <ce:dnd/> activity when the watched
-	 * extension's hint reports AST_PRESENCE_DND. */
-	if (presence_state == AST_PRESENCE_DND) {
+	if (bits & CISCO_BLF_BIT_DND) {
 		ast_str_append(&out, 0, "      <ce:dnd/>\n");
 	}
 
@@ -85,7 +111,7 @@ char *cisco_blf_build_pidf(const char *exten, const char *domain,
 		"  </tuple>\n"
 		"</presence>\n",
 		exten_xml,
-		(exten_state == AST_EXTENSION_UNAVAILABLE) ? "closed" : "open");
+		(bits & CISCO_BLF_BIT_BASIC_OPEN) ? "open" : "closed");
 
 	result = ast_strdup(ast_str_buffer(out));
 	ast_free(out);

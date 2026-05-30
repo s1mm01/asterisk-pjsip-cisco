@@ -482,6 +482,12 @@ static int unsolicited_send_task(void *obj)
  * watcher and don't create a duplicate.
  * ---------------------------------------------------------------------- */
 
+/* Sentinel for ext_state_watcher.last_bits meaning "nothing sent yet" —
+ * distinct from every real cisco_blf_activity_bits() value (those use only
+ * the low 5 bits), so the first state change after a watcher is created
+ * always sends and establishes the baseline. */
+#define BLF_BITS_NONE (~0u)
+
 struct ext_state_watcher {
 	/* All strings heap-allocated. Asterisk imposes no upper bound on
 	 * endpoint ids, extension names, or context names — a fixed buffer
@@ -493,6 +499,16 @@ struct ext_state_watcher {
 	char *extension;
 	char *context;
 	int state_cb_id;
+	/* Wire-relevant activity bits last pushed for this (endpoint, exten).
+	 * The state-change callback fires on every hint transition, including
+	 * ones that don't change what BLF watchers see (e.g. INUSE →
+	 * INUSE|RINGING with alerting suppressed); we skip queueing a NOTIFY
+	 * when the bits are unchanged. Per (endpoint, exten) is the right
+	 * granularity — every contact of the endpoint gets the same body, so
+	 * one value covers them all, and the watcher's existing lifecycle
+	 * means no separate cache to size, evict, or lock. Read/written under
+	 * the watcher's ao2 lock since extension_state callbacks may overlap. */
+	unsigned int last_bits;
 };
 
 static struct ao2_container *ext_state_watchers;
@@ -549,6 +565,37 @@ static void ext_state_watcher_destroy(void *obj)
 }
 
 /*!
+ * \brief Current wire-relevant activity bits for (context, exten).
+ *
+ * Computed from the same two sources send_unsolicited_notify reads — the
+ * extension's hint state and its presence component — so the dedup gate
+ * below and the body that gate guards are derived identically and can't
+ * disagree. (info->presence_state isn't reliable here: the watcher uses
+ * the plain, non-extended ast_extension_state_add, which doesn't carry
+ * presence in the callback info.)
+ */
+static unsigned int blf_current_bits(const char *context, const char *exten)
+{
+	int exten_state;
+	int presence_state;
+	char *p_subtype = NULL;
+	char *p_message = NULL;
+
+	exten_state = ast_extension_state(NULL, context, exten);
+	if (exten_state < 0) {
+		exten_state = AST_EXTENSION_UNAVAILABLE;
+	}
+	presence_state = ast_hint_presence_state(NULL, context, exten,
+		&p_subtype, &p_message);
+	ast_free(p_subtype);
+	ast_free(p_message);
+	if (presence_state < 0) {
+		presence_state = AST_PRESENCE_NOT_SET;
+	}
+	return cisco_blf_activity_bits(exten_state, presence_state);
+}
+
+/*!
  * \brief Hint state changed for a watched extension — enqueue an
  *        unsolicited NOTIFY for the (endpoint, exten) pair through the
  *        shared task path. Sets extension / context so the task picks
@@ -560,8 +607,30 @@ static int ext_state_cb(const char *context, const char *exten,
 	struct ext_state_watcher *w = data;
 	struct ast_sip_endpoint *endpoint;
 	struct unsolicited_task_data *task_data;
+	unsigned int bits;
 
 	(void) info;
+
+	/* Dedup gate: skip transitions whose wire body is identical to the
+	 * one we last pushed for this (endpoint, exten). Asterisk fires this
+	 * callback on every hint transition, many of which collapse to the
+	 * same activity bits (engaged-line alerting suppression, presence
+	 * sub-state flaps). Recorded optimistically — a NOTIFY that later
+	 * fails isn't rolled back, so a failed update waits for the next
+	 * genuine state change rather than retrying. BLF is soft state; the
+	 * simplicity is worth that bounded staleness. */
+	bits = blf_current_bits(context, exten);
+	ao2_lock(w);
+	if (w->last_bits == bits) {
+		ao2_unlock(w);
+		ast_debug(2,
+			"cisco-unsolicited-blf: skipping NOTIFY for %s@%s -> %s "
+			"(activity bits unchanged: 0x%x)\n",
+			exten, context, w->endpoint_id, bits);
+		return 0;
+	}
+	w->last_bits = bits;
+	ao2_unlock(w);
 
 	endpoint = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "endpoint",
 		w->endpoint_id);
@@ -615,6 +684,16 @@ static void ensure_ext_state_watcher(const char *endpoint_id,
 	w = ao2_find(ext_state_watchers, key, OBJ_SEARCH_KEY);
 	if (w) {
 		ast_free(key);
+		/* Called from the REGISTER fanout, which has just re-pushed
+		 * current state to the phone. Clear the dedup baseline so the
+		 * next state change is sent unconditionally and re-establishes
+		 * what the phone now shows — otherwise a last_bits left over
+		 * from before this re-register could wrongly suppress the first
+		 * post-register transition (the phone may have rebooted and lost
+		 * its BLF state). */
+		ao2_lock(w);
+		w->last_bits = BLF_BITS_NONE;
+		ao2_unlock(w);
 		ao2_cleanup(w);
 		return;
 	}
@@ -630,6 +709,7 @@ static void ensure_ext_state_watcher(const char *endpoint_id,
 	w->extension   = ast_strdup(extension);
 	w->context     = ast_strdup(context);
 	w->state_cb_id = -1;
+	w->last_bits   = BLF_BITS_NONE;
 
 	if (!w->endpoint_id || !w->extension || !w->context) {
 		ao2_cleanup(w);
