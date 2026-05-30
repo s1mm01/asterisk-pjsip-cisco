@@ -91,7 +91,11 @@ static struct ao2_container *unsolicited_addr_cache;
  * ------------------------------------------------------------------ */
 
 struct blf_state_cache_entry {
-	char *key;          /* "endpoint_id|exten|contact_uri" */
+	char *key;          /* "endpoint_id|exten|contact_uri" (hash/cmp key) */
+	/* Components retained so blf_state_evict_stale() can match entries by
+	 * (endpoint, contact) without re-parsing the composite key. */
+	char *endpoint_id;
+	char *contact_uri;
 	unsigned int bits;
 };
 
@@ -140,6 +144,8 @@ static void blf_state_cache_entry_destroy(void *obj)
 {
 	struct blf_state_cache_entry *e = obj;
 	ast_free(e->key);
+	ast_free(e->endpoint_id);
+	ast_free(e->contact_uri);
 }
 
 /*!
@@ -210,18 +216,79 @@ static void blf_state_remember(const char *endpoint_id, const char *exten,
 		return;
 	}
 
-	/* Replace any existing entry. */
-	ao2_find(blf_state_cache, key, OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA);
-
 	e = ao2_alloc(sizeof(*e), blf_state_cache_entry_destroy);
 	if (!e) {
 		ast_free(key);
 		return;
 	}
-	e->key  = key;       /* take ownership */
-	e->bits = bits;
-	ao2_link(blf_state_cache, e);
+	e->key         = key;       /* take ownership */
+	e->endpoint_id = ast_strdup(endpoint_id);
+	e->contact_uri = ast_strdup(contact_uri);
+	e->bits        = bits;
+	if (!e->endpoint_id || !e->contact_uri) {
+		ao2_cleanup(e);
+		return;
+	}
+
+	/* Replace any existing entry as one atomic step under the container
+	 * lock: two NOTIFY 2xx callbacks for the same triple can run
+	 * concurrently on different PJSIP transaction threads, and ao2 hash
+	 * containers don't dedup keys, so a non-atomic find→link could leave
+	 * two entries for one triple (same hazard fixed in cisco_addr_store). */
+	ao2_lock(blf_state_cache);
+	ao2_find(blf_state_cache, key,
+		OBJ_SEARCH_KEY | OBJ_UNLINK | OBJ_NODATA | OBJ_NOLOCK);
+	ao2_link_flags(blf_state_cache, e, OBJ_NOLOCK);
+	ao2_unlock(blf_state_cache);
 	ao2_cleanup(e);
+}
+
+/*!
+ * \brief Unlink every dedup entry for \a endpoint_id whose contact URI is
+ *        not in \a live_uris (a NULL-terminated list of the endpoint's
+ *        currently-registered Contact URIs; NULL/empty means none are).
+ *
+ * Called from the REGISTER-fanout path, the point at which a contact-set
+ * change is observed: a contact whose URI changed (NAT rebind) or that
+ * deregistered would otherwise leave its (endpoint, exten, contact)
+ * dedup entries behind forever, since nothing else removes them. Bounds
+ * the cache to the live working set without touching the O(1)
+ * state-change hot path.
+ */
+struct blf_state_evict_arg {
+	const char *endpoint_id;
+	char **live_uris;
+};
+
+static int blf_state_evict_cb(void *obj, void *arg, int flags)
+{
+	struct blf_state_cache_entry *e = obj;
+	struct blf_state_evict_arg *a = arg;
+	char **u;
+
+	if (strcmp(e->endpoint_id, a->endpoint_id)) {
+		return 0;   /* other endpoint — keep */
+	}
+	for (u = a->live_uris; u && *u; u++) {
+		if (!strcmp(*u, e->contact_uri)) {
+			return 0;   /* still registered — keep */
+		}
+	}
+	return CMP_MATCH;   /* stale contact — unlink */
+}
+
+static void blf_state_evict_stale(const char *endpoint_id, char **live_uris)
+{
+	struct blf_state_evict_arg arg = {
+		.endpoint_id = endpoint_id,
+		.live_uris   = live_uris,
+	};
+
+	if (!blf_state_cache || ast_strlen_zero(endpoint_id)) {
+		return;
+	}
+	ao2_callback(blf_state_cache, OBJ_MULTIPLE | OBJ_UNLINK | OBJ_NODATA,
+		blf_state_evict_cb, &arg);
 }
 
 /*
@@ -585,6 +652,38 @@ static int uri_in_list(const char *uri, char **uris)
 	return 0;
 }
 
+/*!
+ * \brief Append a heap copy of \a uri to the NULL-terminated growable
+ *        list \a list (sizes tracked in \a n / \a cap). Returns the
+ *        possibly-moved list. On alloc failure the list is returned
+ *        unchanged — a dropped URI only risks a benign redundant NOTIFY
+ *        the next time its watched exten changes. Free with
+ *        cisco_uri_list_free().
+ */
+static char **uri_list_append(char **list, size_t *n, size_t *cap,
+	const char *uri)
+{
+	char *copy;
+
+	if (*n + 1 >= *cap) {
+		size_t newcap = *cap ? *cap * 2 : 8;
+		char **bigger = ast_realloc(list, newcap * sizeof(*list));
+
+		if (!bigger) {
+			return list;
+		}
+		list = bigger;
+		*cap = newcap;
+	}
+	copy = ast_strdup(uri);
+	if (!copy) {
+		return list;
+	}
+	list[(*n)++] = copy;
+	list[*n] = NULL;
+	return list;
+}
+
 static int unsolicited_send_task(void *obj)
 {
 	struct unsolicited_task_data *data = obj;
@@ -624,6 +723,11 @@ static int unsolicited_send_task(void *obj)
 		struct ao2_container *contacts;
 		struct ao2_iterator iter;
 		struct ast_sip_contact *contact;
+		/* Fanout path only: the endpoint's full current Contact set,
+		 * used after the loop to evict dedup entries for contacts that
+		 * have since left (URI churn / deregister). */
+		char **live_uris = NULL;
+		size_t live_n = 0, live_cap = 0;
 
 		contacts = ast_sip_location_retrieve_contacts_from_aor_list(
 			data->endpoint->aors);
@@ -634,6 +738,14 @@ static int unsolicited_send_task(void *obj)
 				char *exten;
 				int per_contact_attempted = 0;
 				int per_contact_succeeded = 0;
+
+				/* Record the live URI before the delta filter below so
+				 * the eviction sees every currently-registered contact,
+				 * not just the new joiners. */
+				if (is_fanout && !ast_strlen_zero(contact->uri)) {
+					live_uris = uri_list_append(live_uris, &live_n,
+						&live_cap, contact->uri);
+				}
 
 				/* REGISTER-fanout path is delta-filtered: only contacts
 				 * in data->new_contacts get the bootstrap NOTIFYs.
@@ -705,6 +817,16 @@ static int unsolicited_send_task(void *obj)
 			ao2_iterator_destroy(&iter);
 			ao2_cleanup(contacts);
 		}
+
+		/* GC the dedup cache against the live Contact set we just walked.
+		 * Done on the fanout path only — that's where a contact-set change
+		 * is observed (URI churn / deregister), and it keeps the frequent
+		 * state-change path O(1). live_uris is NULL when the endpoint has
+		 * no contacts, which evicts all of its stale entries. */
+		if (is_fanout) {
+			blf_state_evict_stale(endpoint_id, live_uris);
+		}
+		cisco_uri_list_free(live_uris);
 	}
 
 	ao2_cleanup(cisco);
