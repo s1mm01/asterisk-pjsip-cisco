@@ -121,6 +121,30 @@ SEP file (provisioning-side, out of scope), the 200-OK optionsind body
 (see `register_optionsind.xml`), and the post-REGISTER bulkupdate
 REFER (see `bulkupdate_refer.xml`).
 
+### `unsolicited_blf_dedup.xml`
+
+Exercises the state-change **activity-dedup** gate's observable contract:
+a NOTIFY whose body returns to a prior wire state must not be suppressed.
+
+REGISTERs `1060`, which watches its own hint (`subscribe = 1060`, and its
+hint carries the `PJSIP:1060` presence provider). The runner then toggles
+`pjsip cisco donotdisturb on 1060` then `off` — each a DND presence change
+that fans one unsolicited NOTIFY back to the registered Contact. State is
+driven from the CLI rather than the wire because that is the deterministic
+way to flip a hint's presence in CI. `collect_blf_dnd.py` records the
+NOTIFY sequence for tuple `1060` and asserts:
+
+- a NOTIFY carrying `<ce:dnd/>` arrives (DND set), and
+- a NOTIFY **without** `<ce:dnd/>` follows it (DND cleared) — the gate let
+  the transition back through.
+
+Scope note: this validates the dedup *contract* on the wire. It does not
+reproduce the concurrent device-state / presence callback reorder that
+motivated running the gate on the serializer — that race is timing-
+dependent and not reliably reproducible in CI; serializer-confinement is
+what prevents it. The `1060` endpoint and its hint are dedicated to this
+test, so it perturbs no other scenario's state.
+
 ## Running locally
 
 Requires:

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Activity-dedup clearing contract — UAC half.
+
+  Registers endpoint 1060, which watches its OWN hint (subscribe = 1060
+  in tests/ci/pjsip.conf). The REGISTER's Contact points at the collector
+  port, so the post-REGISTER bootstrap NOTIFY and every later state-change
+  NOTIFY for tuple 1060 land where collect_blf_dnd.py is listening.
+
+  The registration (Expires 3600) outlives this short scenario: after the
+  UAC exits, run.sh toggles `pjsip cisco donotdisturb on 1060` then `off`,
+  each a DND presence change on the 1060 hint that fans an unsolicited
+  NOTIFY back to the still-registered Contact. The collector asserts the
+  <ce:dnd/> body appears (DND set) and is then followed by a NOTIFY
+  without it (DND cleared) — the activity-dedup gate must not suppress the
+  transition back to a prior wire state.
+
+  Same Contact pattern as unsolicited_blf.uac.xml; see that file and
+  bulkupdate_refer.uac.xml for the UAC/collector split rationale.
+-->
+<scenario name="cisco_unsolicited_blf_dedup_uac">
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1060@[remote_ip]>;tag=[call_number]
+      To: <sip:1060@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Contact: <sip:1060@127.0.0.1:__SIPP_CONTACT_PORT__;transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddee60>"
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="401" auth="true">
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];rport;branch=[branch]
+      From: <sip:1060@[remote_ip]>;tag=[call_number]
+      To: <sip:1060@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      User-Agent: Cisco-CP8865/12.1.1
+      Max-Forwards: 70
+      Contact: <sip:1060@127.0.0.1:__SIPP_CONTACT_PORT__;transport=tcp>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-aabbccddee60>"
+      [authentication username=1060 password=ci-no-secret]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200">
+  </recv>
+
+  <!-- Brief settle for the 200 OK; the registration persists past this
+       scenario so run.sh can drive the DND toggles afterwards. -->
+  <pause milliseconds="1000"/>
+
+  <ResponseTimeRepartition value="10, 20, 30, 50, 100, 200"/>
+  <CallLengthRepartition value="10, 50, 100, 500, 1000"/>
+
+</scenario>

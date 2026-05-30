@@ -336,6 +336,96 @@ run_unsolicited_blf() {
     fi
 }
 
+# Activity-dedup clearing contract. Registers 1060 (which watches its own
+# hint), then drives DND on then off via the CLI; each toggle is a presence
+# change that fans an unsolicited NOTIFY to 1060's registered Contact. The
+# collector asserts the <ce:dnd/> NOTIFY is followed by a clearing NOTIFY —
+# the dedup gate must not suppress the transition back to a prior wire
+# state. State is driven from the CLI (not the wire) because that is the
+# deterministic way to flip a hint's presence in CI.
+run_blf_dnd_dedup() {
+    local uac="$1"
+    local name
+    local uas_port
+    local uac_port
+    local rendered_uac
+    local collector_pid
+    local collector_rc
+    local uac_rc
+
+    name=$(basename "$uac" .uac.xml)
+    next_sipp_port
+    uas_port="$SIPP_ALLOCATED_PORT"
+    uac_port=$((uas_port + 1))
+    rendered_uac=$(render_scenario "$uac" "$uas_port")
+    assert_no_unrendered_placeholders "$rendered_uac"
+
+    echo
+    echo "=== SIPp + DND-dedup collector scenario: $name ==="
+    echo "  asterisk:   $ASTERISK_HOST:$ASTERISK_PORT"
+    echo "  collector:  0.0.0.0:$uas_port"
+    echo "  sipp UAC:   0.0.0.0:$uac_port"
+    echo
+
+    python3 "$SCRIPT_DIR/collect_blf_dnd.py" \
+        --host 0.0.0.0 \
+        --port "$uas_port" \
+        --timeout 30 \
+        --tuple 1060 \
+        > "$SIPP_TRACE_DIR/$name.collector.log" 2>&1 &
+    collector_pid=$!
+
+    # Brief delay so the collector bind completes before REGISTER triggers
+    # asterisk's deferred bootstrap NOTIFY.
+    sleep 1
+
+    set +e
+    timeout 60s sipp \
+        -sf "$rendered_uac" \
+        -m 1 \
+        -p "$uac_port" \
+        -t t1 \
+        -nostdin \
+        -trace_err -error_file "$SIPP_TRACE_DIR/$name.uac.err" \
+        -trace_screen -screen_file "$SIPP_TRACE_DIR/$name.uac.screen" \
+        -timeout 30s \
+        -deadcall_wait 0 \
+        "$ASTERISK_HOST:$ASTERISK_PORT" \
+        < /dev/null
+    uac_rc=$?
+
+    if [ $uac_rc -eq 0 ]; then
+        # Let the bootstrap fanout register the (1060, 1060) state watcher
+        # and the bootstrap NOTIFY land, then drive DND on -> off. Each
+        # toggle fires ast_presence_state_changed(PJSIP:1060) -> hint
+        # presence change -> one unsolicited NOTIFY to the Contact.
+        sleep 3
+        echo "--- driving: pjsip cisco donotdisturb on 1060 ---"
+        sudo asterisk -rx 'pjsip cisco donotdisturb on 1060' 2>&1 | head -3
+        sleep 3
+        echo "--- driving: pjsip cisco donotdisturb off 1060 ---"
+        sudo asterisk -rx 'pjsip cisco donotdisturb off 1060' 2>&1 | head -3
+        sleep 2
+    else
+        kill "$collector_pid" 2>/dev/null || true
+    fi
+
+    wait "$collector_pid"
+    collector_rc=$?
+    set -e
+
+    # Leave no astdb residue regardless of outcome (no cross-check depends
+    # on 1060, but keep the box clean for reruns).
+    sudo asterisk -rx 'pjsip cisco donotdisturb off 1060' >/dev/null 2>&1 || true
+
+    if [ $uac_rc -ne 0 ] || [ $collector_rc -ne 0 ]; then
+        echo "::error::DND-dedup scenario $name failed (UAC=$uac_rc, collector=$collector_rc)"
+        echo "--- $SIPP_TRACE_DIR/$name.collector.log ---"
+        cat "$SIPP_TRACE_DIR/$name.collector.log" 2>/dev/null || true
+        return 1
+    fi
+}
+
 # Iterate scenarios. *.uac.xml files have a matching *.uas.xml and
 # run as paired tests; *.uas.xml files are picked up via that pairing
 # (skip them here). Everything else runs as a single SIPp UAC scenario.
@@ -344,6 +434,9 @@ for scenario in "$SCRIPT_DIR"/*.xml; do
     case "$scenario" in
         *.uas.xml)
             continue
+            ;;
+        */unsolicited_blf_dedup.uac.xml)
+            run_blf_dnd_dedup "$scenario"
             ;;
         */unsolicited_blf.uac.xml)
             run_unsolicited_blf "$scenario"
