@@ -336,6 +336,22 @@ run_unsolicited_blf() {
     fi
 }
 
+# Poll until $logfile contains $pattern, or give up after ~10s. Used to
+# replace fixed `sleep`s that race against background-process startup on a
+# cold CI box. Returns 0 once the pattern appears, 1 on timeout.
+wait_for_log_line() {
+    local logfile="$1"
+    local pattern="$2"
+    local i
+    for i in $(seq 1 100); do
+        if grep -q "$pattern" "$logfile" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 # Activity-dedup clearing contract. Registers 1060 (which watches its own
 # hint), then drives DND on then off via the CLI; each toggle is a presence
 # change that fans an unsolicited NOTIFY to 1060's registered Contact. The
@@ -351,6 +367,7 @@ run_blf_dnd_dedup() {
     local rendered_uac
     local collector_pid
     local collector_rc
+    local collector_log
     local uac_rc
 
     name=$(basename "$uac" .uac.xml)
@@ -359,6 +376,7 @@ run_blf_dnd_dedup() {
     uac_port=$((uas_port + 1))
     rendered_uac=$(render_scenario "$uac" "$uas_port")
     assert_no_unrendered_placeholders "$rendered_uac"
+    collector_log="$SIPP_TRACE_DIR/$name.collector.log"
 
     echo
     echo "=== SIPp + DND-dedup collector scenario: $name ==="
@@ -372,12 +390,25 @@ run_blf_dnd_dedup() {
         --port "$uas_port" \
         --timeout 30 \
         --tuple 1060 \
-        > "$SIPP_TRACE_DIR/$name.collector.log" 2>&1 &
+        > "$collector_log" 2>&1 &
     collector_pid=$!
 
-    # Brief delay so the collector bind completes before REGISTER triggers
-    # asterisk's deferred bootstrap NOTIFY.
-    sleep 1
+    # Wait for the collector to actually bind before the REGISTER triggers
+    # asterisk's bootstrap NOTIFY — it logs this banner only after
+    # listen() returns. A fixed sleep races Python startup on a cold CI
+    # box and would let the bootstrap NOTIFY hit a refused port.
+    if ! wait_for_log_line "$collector_log" "collecting BLF DND NOTIFYs"; then
+        echo "::error::DND-dedup collector for $name never bound its socket"
+        kill "$collector_pid" 2>/dev/null || true
+        wait "$collector_pid" 2>/dev/null || true
+        cat "$collector_log" 2>/dev/null || true
+        return 1
+    fi
+
+    # Establish a known DND-off baseline before the phone registers, so the
+    # observed sequence is deterministic regardless of astdb residue from a
+    # prior run: bootstrap NOTIFY = nodnd, then on -> dnd, then off -> nodnd.
+    sudo asterisk -rx 'pjsip cisco donotdisturb off 1060' >/dev/null 2>&1 || true
 
     set +e
     timeout 60s sipp \
@@ -395,17 +426,25 @@ run_blf_dnd_dedup() {
     uac_rc=$?
 
     if [ $uac_rc -eq 0 ]; then
-        # Let the bootstrap fanout register the (1060, 1060) state watcher
-        # and the bootstrap NOTIFY land, then drive DND on -> off. Each
-        # toggle fires ast_presence_state_changed(PJSIP:1060) -> hint
-        # presence change -> one unsolicited NOTIFY to the Contact.
-        sleep 3
-        echo "--- driving: pjsip cisco donotdisturb on 1060 ---"
-        sudo asterisk -rx 'pjsip cisco donotdisturb on 1060' 2>&1 | head -3
-        sleep 3
-        echo "--- driving: pjsip cisco donotdisturb off 1060 ---"
-        sudo asterisk -rx 'pjsip cisco donotdisturb off 1060' 2>&1 | head -3
-        sleep 2
+        # Gate the DND toggles on proof the watcher exists: wait for the
+        # bootstrap NOTIFY for tuple 1060 (logged as "tuple 1060 sequence:")
+        # to land at the collector. That confirms the REGISTER-fanout task
+        # ran, created the (1060, 1060) state watcher, and its bootstrap
+        # NOTIFY arrived. Toggling DND before the watcher is registered
+        # would fan no NOTIFY and false-fail the test. Each toggle then
+        # fires ast_presence_state_changed(PJSIP:1060) -> hint presence
+        # change -> one unsolicited NOTIFY to the Contact.
+        if wait_for_log_line "$collector_log" "tuple 1060 sequence:"; then
+            echo "--- driving: pjsip cisco donotdisturb on 1060 ---"
+            sudo asterisk -rx 'pjsip cisco donotdisturb on 1060' 2>&1 | head -3
+            sleep 1
+            echo "--- driving: pjsip cisco donotdisturb off 1060 ---"
+            sudo asterisk -rx 'pjsip cisco donotdisturb off 1060' 2>&1 | head -3
+            sleep 1
+        else
+            echo "::error::bootstrap NOTIFY for tuple 1060 never arrived — (1060,1060) watcher not registered"
+            kill "$collector_pid" 2>/dev/null || true
+        fi
     else
         kill "$collector_pid" 2>/dev/null || true
     fi
@@ -420,8 +459,8 @@ run_blf_dnd_dedup() {
 
     if [ $uac_rc -ne 0 ] || [ $collector_rc -ne 0 ]; then
         echo "::error::DND-dedup scenario $name failed (UAC=$uac_rc, collector=$collector_rc)"
-        echo "--- $SIPP_TRACE_DIR/$name.collector.log ---"
-        cat "$SIPP_TRACE_DIR/$name.collector.log" 2>/dev/null || true
+        echo "--- $collector_log ---"
+        cat "$collector_log" 2>/dev/null || true
         return 1
     fi
 }
