@@ -146,6 +146,46 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
 }
 
 /*
+ * Snapshot a watched extension's wire-relevant state in one place: the
+ * extension (device) state and the separate presence component. Callers
+ * take a single snapshot and feed it to both cisco_blf_activity_bits (the
+ * dedup decision / committed baseline) and send_unsolicited_notify (the
+ * body), so the gate and the body it gates derive from the SAME read and
+ * can never disagree — a second independent re-query could race a
+ * concurrent hint update and commit bits that were never sent.
+ *
+ * DND lives in the hint's presence channel (set by cisco_dnd_set /
+ * res_pjsip_cisco_endpoint's PJSIP: provider, or any
+ * ast_presence_state_changed source) — extension state alone doesn't
+ * reflect it, so query it separately.
+ *
+ * presencestate.c:165 unconditionally dereferences the subtype/message
+ * out-params (no NULL guard), so we MUST pass addresses of real char*
+ * locals — passing NULL,NULL crashes any presence lookup against a hint
+ * that has a non-empty presence component (e.g. "PJSIP/1010,PJSIP:1010").
+ * The strings, if any, are allocated by the provider callback and we own
+ * them.
+ */
+static void blf_query_state(const char *context, const char *exten,
+	int *exten_state, int *presence_state)
+{
+	char *p_subtype = NULL;
+	char *p_message = NULL;
+
+	*exten_state = ast_extension_state(NULL, context, exten);
+	if (*exten_state < 0) {
+		*exten_state = AST_EXTENSION_UNAVAILABLE;
+	}
+	*presence_state = ast_hint_presence_state(NULL, context, exten,
+		&p_subtype, &p_message);
+	ast_free(p_subtype);
+	ast_free(p_message);
+	if (*presence_state < 0) {
+		*presence_state = AST_PRESENCE_NOT_SET;
+	}
+}
+
+/*
  * Send a single unsolicited Event: presence NOTIFY to the phone for
  * the given watched extension.
  *
@@ -157,7 +197,8 @@ static void unsolicited_response_cb(void *token, pjsip_event *e)
  * module doesn't need to opt in.
  */
 static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
-	struct ast_sip_contact *contact, const char *exten, const char *context)
+	struct ast_sip_contact *contact, const char *exten, const char *context,
+	int exten_state, int presence_state)
 {
 	pjsip_tx_data *tdata = NULL;
 	pj_str_t type;
@@ -167,8 +208,6 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 	char from_user[PJSIP_MAX_URL_SIZE];
 	char domain_buf[PJSIP_MAX_URL_SIZE];
 	const char *local_domain;
-	int exten_state;
-	int presence_state;
 
 	/* Skip if the contact is known-dead. When a phone falls off the
 	 * network its registration lingers (~1h) and asterisk keeps the
@@ -196,34 +235,12 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 		}
 	}
 
-	exten_state = ast_extension_state(NULL, context, exten);
-	if (exten_state < 0) {
-		exten_state = AST_EXTENSION_UNAVAILABLE;
-	}
-
-	/* DND state lives in the hint's presence channel (set by
-	 * cisco_dnd_set / res_pjsip_cisco_endpoint's PJSIP: provider, or
-	 * any ast_presence_state_changed source). Query separately —
-	 * extension state alone doesn't reflect it.
-	 *
-	 * presencestate.c:165 unconditionally dereferences the subtype/
-	 * message out-params (no NULL guard), so we MUST pass addresses of
-	 * real char* locals — passing NULL,NULL crashes any presence
-	 * lookup against a hint that has a non-empty presence component
-	 * (e.g. "PJSIP/1010,PJSIP:1010"). The strings, if any, are
-	 * allocated by the provider callback and we own them. */
-	{
-		char *p_subtype = NULL;
-		char *p_message = NULL;
-
-		presence_state = ast_hint_presence_state(NULL, context, exten,
-			&p_subtype, &p_message);
-		ast_free(p_subtype);
-		ast_free(p_message);
-	}
-	if (presence_state < 0) {
-		presence_state = AST_PRESENCE_NOT_SET;
-	}
+	/* exten_state / presence_state are snapshotted once by the caller
+	 * (blf_query_state) and passed in, NOT re-queried here: on the
+	 * state-change path the SAME snapshot feeds the dedup decision, every
+	 * per-contact body, and the committed baseline, so last_bits can never
+	 * disagree with what actually went on the wire. See blf_query_state and
+	 * unsolicited_send_task. */
 
 	if (ast_sip_create_request("NOTIFY", NULL, endpoint, NULL, contact, &tdata)) {
 		ast_log(LOG_WARNING,
@@ -345,7 +362,7 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 static void ensure_ext_state_watcher(const char *endpoint_id,
 	const char *extension, const char *context);
 static int blf_state_change_should_send(const char *endpoint_id,
-	const char *exten, const char *context, unsigned int *bits_out);
+	const char *exten, unsigned int bits);
 static void blf_state_change_commit(const char *endpoint_id,
 	const char *exten, unsigned int bits);
 
@@ -383,6 +400,8 @@ static int unsolicited_send_task(void *obj)
 	int succeeded = 0;
 	int is_fanout = (data->extension == NULL);
 	unsigned int change_bits = 0;   /* state-change path: bits to commit */
+	int sc_exten_state = 0;         /* state-change path: one-shot state */
+	int sc_presence_state = 0;      /* snapshot, reused for every contact */
 
 	endpoint_id = ast_sorcery_object_get_id(data->endpoint);
 
@@ -407,13 +426,22 @@ static int unsolicited_send_task(void *obj)
 		fanout_list    = data->extension;
 		fanout_context = data->context;
 
+		/* One snapshot of the watched extension's state drives everything
+		 * on this path: the dedup decision, every per-contact body (passed
+		 * to send_unsolicited_notify below), and the committed baseline. A
+		 * single read means last_bits can never disagree with what actually
+		 * went on the wire. */
+		blf_query_state(data->context, data->extension,
+			&sc_exten_state, &sc_presence_state);
+		change_bits = cisco_blf_activity_bits(sc_exten_state, sc_presence_state);
+
 		/* Dedup on the serializer: skip the whole fanout when this
 		 * transition's wire body matches what we last committed for this
 		 * (endpoint, exten). All contacts get the same body, so one
 		 * decision covers them. The baseline is advanced after the
 		 * fanout, not here — see blf_state_change_commit below. */
 		if (!blf_state_change_should_send(endpoint_id, data->extension,
-				data->context, &change_bits)) {
+				change_bits)) {
 			ast_debug(2,
 				"cisco-unsolicited-blf: skipping NOTIFY fanout for "
 				"%s@%s -> %s (activity bits unchanged)\n",
@@ -436,8 +464,19 @@ static int unsolicited_send_task(void *obj)
 				char *list_copy = ast_strdupa(fanout_list);
 				char *exten;
 				while ((exten = ast_strip(strsep(&list_copy, ",")))) {
+					int es, ps;
 					if (ast_strlen_zero(exten)) {
 						continue;
+					}
+					/* State-change path reuses the single snapshot taken
+					 * above (so the committed bits match the body); the
+					 * REGISTER fanout has many extens and no dedup, so it
+					 * reads each one's state here. */
+					if (is_fanout) {
+						blf_query_state(fanout_context, exten, &es, &ps);
+					} else {
+						es = sc_exten_state;
+						ps = sc_presence_state;
 					}
 					/* Per-(contact, exten) pair: each pair owes one
 					 * NOTIFY. attempted++ before send so a failure
@@ -445,7 +484,7 @@ static int unsolicited_send_task(void *obj)
 					 * stays uncommitted. */
 					attempted++;
 					if (!send_unsolicited_notify(data->endpoint, contact,
-							exten, fanout_context)) {
+							exten, fanout_context, es, ps)) {
 						succeeded++;
 					}
 					/* Register the state-change watcher only on the
@@ -594,65 +633,6 @@ static void ext_state_watcher_destroy(void *obj)
 	ast_free(w->context);
 }
 
-/*!
- * \brief Current wire-relevant activity bits for (context, exten).
- *
- * Computed from the same two sources send_unsolicited_notify reads — the
- * extension's hint state and its presence component — so the dedup gate
- * and the body it guards are derived identically and can't disagree.
- *
- * Called from the serializer task, NOT from the extension_state callback:
- * pbx.c invokes watchers with no hint locks held and explicitly warns
- * against re-entering the hint subsystem from there, so the re-query lives
- * on the deferred task path (the same context send_unsolicited_notify
- * already queries from).
- */
-static unsigned int blf_current_bits(const char *context, const char *exten)
-{
-	int exten_state;
-	int presence_state;
-	char *p_subtype = NULL;
-	char *p_message = NULL;
-
-	exten_state = ast_extension_state(NULL, context, exten);
-	if (exten_state < 0) {
-		exten_state = AST_EXTENSION_UNAVAILABLE;
-	}
-	presence_state = ast_hint_presence_state(NULL, context, exten,
-		&p_subtype, &p_message);
-	ast_free(p_subtype);
-	ast_free(p_message);
-	if (presence_state < 0) {
-		presence_state = AST_PRESENCE_NOT_SET;
-	}
-	return cisco_blf_activity_bits(exten_state, presence_state);
-}
-
-/*!
- * \brief State-change dedup peek. \retval 1 the activity bits for
- *        (context, exten) differ from what was last committed for this
- *        (endpoint, exten) — caller should fan out, then call
- *        blf_state_change_commit() with \a *bits_out once the NOTIFYs are
- *        actually queued; \retval 0 the bits are unchanged, skip the fanout.
- *        \a *bits_out always receives the freshly-computed bits.
- *
- * Deliberately does NOT advance last_bits here. A transition whose fanout
- * then fails (UNAVAILABLE contact, body-alloc error, ast_sip_send_request
- * failure) must not move the baseline — otherwise the next transition
- * carrying the same body (e.g. INUSE -> INUSE|RINGING, which collapse to
- * identical bits, exactly what this dedup targets) would be suppressed even
- * though a phone never received that state. Commit happens only after a
- * clean fanout, mirroring the address cache's all-or-nothing policy.
- *
- * Both the hint re-query and the compare run here on the single unsolicited
- * serializer, NOT the extension_state callback: that keeps last_bits
- * consistent with the body the task sends, and makes the peek/commit pair
- * race-free since every writer of last_bits — commit and the REGISTER-fanout
- * reset in ensure_ext_state_watcher() — runs on this one serializer, in
- * order. Sampling in the callback let overlapping device-state / presence
- * callbacks commit stale bits out of order, wrongly suppressing a clearing
- * NOTIFY.
- */
 static struct ext_state_watcher *blf_state_watcher_find(const char *endpoint_id,
 	const char *exten)
 {
@@ -671,24 +651,49 @@ static struct ext_state_watcher *blf_state_watcher_find(const char *endpoint_id,
 	return w;
 }
 
+/*!
+ * \brief State-change dedup peek. \retval 1 \a bits differ from what was
+ *        last committed for this (endpoint, exten) — caller should fan out,
+ *        then call blf_state_change_commit() with the same \a bits once the
+ *        NOTIFYs are actually queued; \retval 0 the bits are unchanged, skip
+ *        the fanout.
+ *
+ * \a bits is the caller's single snapshot of the watched extension's state
+ * (blf_query_state -> cisco_blf_activity_bits) — the SAME value that feeds
+ * the per-contact bodies, so last_bits can never disagree with what went on
+ * the wire.
+ *
+ * Deliberately does NOT advance last_bits here. A transition whose fanout
+ * then fails (UNAVAILABLE contact, body-alloc error, ast_sip_send_request
+ * failure) must not move the baseline — otherwise the next transition
+ * carrying the same body (e.g. INUSE -> INUSE|RINGING, which collapse to
+ * identical bits, exactly what this dedup targets) would be suppressed even
+ * though a phone never received that state. Commit happens only after a
+ * clean fanout, mirroring the address cache's all-or-nothing policy.
+ *
+ * The snapshot, the compare, and the commit all run on the single
+ * unsolicited serializer, NOT the extension_state callback: that keeps
+ * last_bits consistent with the body the task sends, and makes the
+ * peek/commit pair race-free since every writer of last_bits — commit and
+ * the REGISTER-fanout reset in ensure_ext_state_watcher() — runs on this one
+ * serializer, in order. Sampling in the callback let overlapping
+ * device-state / presence callbacks commit stale bits out of order, wrongly
+ * suppressing a clearing NOTIFY.
+ */
 static int blf_state_change_should_send(const char *endpoint_id,
-	const char *exten, const char *context, unsigned int *bits_out)
+	const char *exten, unsigned int bits)
 {
 	struct ext_state_watcher *w = blf_state_watcher_find(endpoint_id, exten);
-	unsigned int bits;
 	int send;
 
-	*bits_out = 0;
 	if (!w) {
 		return 1;   /* no watcher / no dedup state — never suppress */
 	}
 
-	bits = blf_current_bits(context, exten);
 	ao2_lock(w);
 	send = (w->last_bits != bits);
 	ao2_unlock(w);
 	ao2_cleanup(w);
-	*bits_out = bits;
 	return send;
 }
 
