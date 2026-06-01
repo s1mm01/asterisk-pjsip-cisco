@@ -73,12 +73,12 @@ static int cisco_mac_cmp_fn(void *obj, void *arg, int flags)
 		right_key = ((struct cisco_mac_info *) arg)->mac;
 		/* Fall through */
 	case OBJ_SEARCH_KEY:
-		if (strcmp(left->mac, right_key)) {
+		if (strcmp(left->mac, right_key) != 0) {
 			return 0;
 		}
 		break;
 	case OBJ_SEARCH_PARTIAL_KEY:
-		if (strncmp(left->mac, right_key, strlen(right_key))) {
+		if (strncmp(left->mac, right_key, strlen(right_key)) != 0) {
 			return 0;
 		}
 		break;
@@ -162,7 +162,7 @@ static int cisco_mac_endpoint_match(void *obj, void *arg, int flags)
 	const char *want = arg;
 
 	(void) flags;
-	if (strcmp(entry->endpoint_id, want)) {
+	if (strcmp(entry->endpoint_id, want) != 0) {
 		return 0;
 	}
 	if (ast_tvdiff_ms(entry->expires, ast_tvnow()) <= 0) {
@@ -232,7 +232,7 @@ static int cisco_mac_call_id_match(void *obj, void *arg, int flags)
 	const char *want = arg;
 
 	(void) flags;
-	if (strcmp(entry->call_id, want)) {
+	if (strcmp(entry->call_id, want) != 0) {
 		return 0;
 	}
 	if (ast_tvdiff_ms(entry->expires, ast_tvnow()) <= 0) {

@@ -68,6 +68,7 @@
 
 #include "asterisk/module.h"
 #include "asterisk/astobj2.h"
+#include "asterisk/conversions.h"
 #include "asterisk/strings.h"
 #include "asterisk/utils.h"
 #include "asterisk/taskprocessor.h"
@@ -143,7 +144,7 @@ static int detect_remotecc_softkey(pjsip_msg_body *body,
 
 	root = ast_xml_get_root(doc);
 	if (!root || strcasecmp(ast_xml_node_get_name(root),
-			"x-cisco-remotecc-request")) {
+			"x-cisco-remotecc-request") != 0) {
 		goto done;
 	}
 
@@ -235,6 +236,7 @@ static int detect_conflist_action(pjsip_rx_data *rdata, pjsip_msg_body *body,
 	struct ast_xml_node *dpt;
 	char appid[32];
 	char confid[32];
+	int appid_num;
 	pjsip_msg_body *full_body;
 	pjsip_media_type cm_type;
 	pjsip_multipart_part *cm_part;
@@ -251,7 +253,7 @@ static int detect_conflist_action(pjsip_rx_data *rdata, pjsip_msg_body *body,
 
 	root = ast_xml_get_root(doc);
 	if (!root || strcasecmp(ast_xml_node_get_name(root),
-			"x-cisco-remotecc-request")) {
+			"x-cisco-remotecc-request") != 0) {
 		goto done;
 	}
 
@@ -265,8 +267,10 @@ static int detect_conflist_action(pjsip_rx_data *rdata, pjsip_msg_body *body,
 			sizeof(appid))) {
 		goto done;
 	}
-	if (atoi(appid) != CONFERENCE_APP_ID_CONF_LIST) {
-		/* Not ours — remotecc.c handles other application_ids. */
+	if (ast_str_to_int(appid, &appid_num) ||
+			appid_num != CONFERENCE_APP_ID_CONF_LIST) {
+		/* Not ours, or a non-numeric applicationid — remotecc.c
+		 * handles other application_ids. */
 		goto done;
 	}
 	memset(out, 0, sizeof(*out));

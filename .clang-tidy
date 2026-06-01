@@ -1,0 +1,78 @@
+# clang-tidy configuration for asterisk-pjsip-cisco.
+#
+# Run with:   make tidy            (generates compile_commands.json via
+#                                   bear, then analyses every res/*.c)
+# Or by hand: clang-tidy -p . res/cisco_endpoint/endpoint.c
+#
+# The compile DB MUST be produced from an ASTERISK_SRC_DIR build (see
+# the `tidy` target in the Makefile). clang-tidy parses each TU with the
+# recorded -I / -D set, so the pjproject config_site.h overlay — which
+# shifts struct offsets inside pjsip_rx_data et al. — is in effect. A DB
+# built without that overlay would have clang-tidy reasoning about a
+# different ABI than the running asterisk (CLAUDE.md "header-mismatch
+# trap").
+#
+# Check selection is tuned for Asterisk-style C: keep the path-sensitive
+# analyzer and the bug-class detectors, drop the checks that only make
+# sense for modern C++ or that fire constantly on idiomatic kernel-ish C
+# (ao2 refcounting, fixed-size on-stack buffers, deliberate narrowing).
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  performance-*,
+  portability-*,
+  misc-*,
+  readability-non-const-parameter,
+  readability-misleading-indentation,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-switch-missing-default-case,
+  -misc-header-include-cycle,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -cert-err33-c,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-unused-parameters,
+  -clang-analyzer-security.insecureAPI.strcpy,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-optin.core.EnumCastOutOfRange
+
+# Checks disabled above are noise for *this* tree specifically:
+#   misc-header-include-cycle — the cycles it reports are inside
+#       asterisk's own cdr.h / utils.h, which we can't change.
+#   clang-analyzer-optin.core.EnumCastOutOfRange — fires on every
+#       ao2 call that ORs OBJ_SEARCH_* / OBJ_NODATA flags and passes
+#       the result as enum ast_search_flags (the documented ao2 API
+#       shape). A flags-enum OR is not itself a named enumerator, but
+#       it's correct usage, not an out-of-range cast.
+#
+# Compiler args clang-tidy needs to parse Asterisk headers with clang:
+#   -fblocks — asterisk/utils.h takes a Clang "blocks" (^{}/__block)
+#       code path under __clang__ (e.g. the SCOPED_* helpers). Without
+#       it clang-tidy fails to parse any TU that pulls in that macro
+#       (res/cisco_conference/confrn.c), reporting spurious
+#       clang-diagnostic-errors. gcc never hits this path, so the real
+#       build doesn't need the flag.
+#   -Wno-unknown-warning-option — the compile DB records the build's
+#       gcc-only -W flags (-Wjump-misses-init, -Wlogical-op,
+#       -Wduplicated-cond, …); silence clang complaining it doesn't
+#       know them.
+ExtraArgs:
+  - '-fblocks'
+  - '-Wno-unknown-warning-option'
+
+# Advisory only. The build's own -Werror gate (the warning set in the
+# Makefile) is the blocking line; clang-tidy findings annotate but never
+# fail CI. Promote a specific check here once the tree is clean for it.
+WarningsAsErrors: ''
+
+# Only surface diagnostics from our own headers. Anything matching
+# "cisco" in its path is ours (include/cisco/*, res/cisco_*/include/*);
+# asterisk and pjproject system headers never do, so their noise is
+# filtered out.
+HeaderFilterRegex: 'cisco'
+
+FormatStyle: none

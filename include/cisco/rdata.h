@@ -19,8 +19,8 @@
  * inside cisco_pjsip_module_match).
  */
 
-#ifndef _RES_PJSIP_CISCO_RDATA_H
-#define _RES_PJSIP_CISCO_RDATA_H
+#ifndef RES_PJSIP_CISCO_RDATA_H
+#define RES_PJSIP_CISCO_RDATA_H
 
 #include "asterisk.h"
 
@@ -161,4 +161,4 @@ struct ast_sip_endpoint *cisco_pjsip_module_match(
 	pjsip_rx_data *rdata, const char *method_name,
 	const char *opt_event_name);
 
-#endif /* _RES_PJSIP_CISCO_RDATA_H */
+#endif /* RES_PJSIP_CISCO_RDATA_H */

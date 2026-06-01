@@ -105,7 +105,7 @@ const char *cisco_cfwd_get(const char *endpoint_id, char *buf, size_t buflen)
 	if (ast_strlen_zero(endpoint_id)) {
 		return buf;
 	}
-	if (ast_db_get("CF", endpoint_id, buf, buflen)) {
+	if (ast_db_get("CF", endpoint_id, buf, (int) buflen)) {
 		buf[0] = '\0';
 	}
 	return buf;

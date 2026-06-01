@@ -32,8 +32,8 @@
  * them alone.
  */
 
-#ifndef _RES_PJSIP_CISCO_ENDPOINT_H
-#define _RES_PJSIP_CISCO_ENDPOINT_H
+#ifndef RES_PJSIP_CISCO_ENDPOINT_H
+#define RES_PJSIP_CISCO_ENDPOINT_H
 
 #include "asterisk.h"
 
@@ -243,4 +243,4 @@ int cisco_mac_lookup_by_endpoint(const char *endpoint_id,
 int cisco_mac_lookup_by_call_id(const char *call_id,
 	struct cisco_mac_info *out);
 
-#endif /* _RES_PJSIP_CISCO_ENDPOINT_H */
+#endif /* RES_PJSIP_CISCO_ENDPOINT_H */

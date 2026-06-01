@@ -183,7 +183,7 @@ static int imageattr_matches_payload(const pjmedia_sdp_attr *attr,
 		return 1;
 	}
 
-	fmt_len = fmt->slen;
+	fmt_len = (size_t) fmt->slen;
 	return !strncmp(payload, fmt->ptr, fmt_len)
 		&& (payload[fmt_len] == ' ' || payload[fmt_len] == '\t');
 }
@@ -550,7 +550,7 @@ static void with_peer_state(struct ast_sip_session *session,
 static peer_cb_result peer_imageattr_cb(struct ast_channel *peer,
 	const struct cisco_h264_imageattr_state *state, void *cb_arg)
 {
-	char **out = cb_arg;
+	char **out = (char **) cb_arg;
 	(void) peer;
 
 	if (state && state->value) {
@@ -570,7 +570,7 @@ static char *cisco_h264_peer_imageattr(struct ast_sip_session *session)
 {
 	char *value = NULL;
 
-	with_peer_state(session, peer_imageattr_cb, &value);
+	with_peer_state(session, peer_imageattr_cb, (void *) &value);
 	return value;
 }
 
@@ -604,7 +604,7 @@ static peer_cb_result peer_had_video_cb(struct ast_channel *peer,
 	const struct ast_channel_tech *tech;
 
 	tech = ast_channel_tech(peer);
-	if (!tech || strcasecmp(tech->type, "PJSIP")) {
+	if (!tech || strcasecmp(tech->type, "PJSIP") != 0) {
 		/* Local channels and other helpers contribute nothing —
 		 * they have no SDP. Don't count them as "a SIP peer". */
 		return PEER_CB_CONTINUE;

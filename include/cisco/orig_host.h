@@ -25,8 +25,8 @@
  * Cisco-phone contact is enough.
  */
 
-#ifndef _RES_PJSIP_CISCO_ORIG_HOST_H
-#define _RES_PJSIP_CISCO_ORIG_HOST_H
+#ifndef RES_PJSIP_CISCO_ORIG_HOST_H
+#define RES_PJSIP_CISCO_ORIG_HOST_H
 
 /*!
  * \brief Register the global on_tx_request hook that rewrites RURI
@@ -42,4 +42,4 @@ int cisco_orig_host_register(void);
  */
 void cisco_orig_host_unregister(void);
 
-#endif /* _RES_PJSIP_CISCO_ORIG_HOST_H */
+#endif /* RES_PJSIP_CISCO_ORIG_HOST_H */

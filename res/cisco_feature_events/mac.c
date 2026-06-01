@@ -72,7 +72,7 @@ static int cisco_mac_normalize(const char *in, char *out)
 		if (!isxdigit((unsigned char) in[i])) {
 			return -1;
 		}
-		out[i] = tolower((unsigned char) in[i]);
+		out[i] = (char) tolower((unsigned char) in[i]);
 	}
 	out[CISCO_MAC_LEN] = '\0';
 	return 0;
@@ -170,7 +170,7 @@ static int reason_extract(const char *src, const char *key,
 		out[0] = '\0';
 		return 0;        /* pathologically long; ignore */
 	}
-	memcpy(buf, hit, end - hit);
+	memcpy(buf, hit, (size_t) (end - hit));
 	buf[end - hit] = '\0';
 
 	/* Trim trailing ".loads" suffix on firmware-version fields. */
@@ -215,7 +215,7 @@ static void parse_reason_header(pjsip_msg *msg, struct cisco_mac_info *info)
 	/* The chan_sip patch only acts when the prefix is exactly
 	 * "SIP;cause=200;text=" — anything else is treated as a non-200
 	 * reason and ignored. Replicate. */
-	if (strncmp(reason, "SIP;cause=200;text=", 19)) {
+	if (strncmp(reason, "SIP;cause=200;text=", 19) != 0) {
 		return;
 	}
 	text = reason + 19;
@@ -403,7 +403,7 @@ static struct ast_sip_endpoint *cisco_mac_identify(pjsip_rx_data *rdata)
 	if (cisco_mac_lookup_by_mac(mac, &info)) {
 		return NULL;
 	}
-	if (strcmp(info.src_host, rdata->pkt_info.src_name)) {
+	if (strcmp(info.src_host, rdata->pkt_info.src_name) != 0) {
 		ast_debug(2, "cisco-mac-identify: MAC %s learned from %s but request "
 			"arrived from %s — not matching\n",
 			mac, info.src_host, rdata->pkt_info.src_name);

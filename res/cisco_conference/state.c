@@ -164,10 +164,10 @@ int cisco_selected_cmp(void *obj, void *arg, int flags)
 	const struct cisco_selected *l = obj;
 	const struct cisco_selected *r = arg;
 
-	if (strcasecmp(l->endpoint_id, r->endpoint_id)
-		|| strcmp(l->dialog_id.call_id, r->dialog_id.call_id)
-		|| strcmp(l->dialog_id.local_tag, r->dialog_id.local_tag)
-		|| strcmp(l->dialog_id.remote_tag, r->dialog_id.remote_tag)) {
+	if (strcasecmp(l->endpoint_id, r->endpoint_id) != 0
+		|| strcmp(l->dialog_id.call_id, r->dialog_id.call_id) != 0
+		|| strcmp(l->dialog_id.local_tag, r->dialog_id.local_tag) != 0
+		|| strcmp(l->dialog_id.remote_tag, r->dialog_id.remote_tag) != 0) {
 		return 0;
 	}
 	return CMP_MATCH | CMP_STOP;
@@ -231,7 +231,7 @@ static int cisco_selected_iter_cb(void *obj, void *arg, int flags)
 	struct cisco_selected *s = obj;
 	struct selected_iter_filter *f = arg;
 
-	if (strcasecmp(s->endpoint_id, f->endpoint_id)) {
+	if (strcasecmp(s->endpoint_id, f->endpoint_id) != 0) {
 		return 0;
 	}
 	return f->visitor(&s->dialog_id, f->visitor_arg) ? CMP_STOP : 0;

@@ -23,6 +23,7 @@
 #include <pjlib.h>
 
 #include "asterisk/astobj2.h"
+#include "asterisk/conversions.h"
 #include "asterisk/bridge.h"
 #include "asterisk/bridge_channel.h"
 #include "asterisk/bridge_features.h"
@@ -470,7 +471,12 @@ static int conflist_action_send_task(void *obj)
 			ast_copy_string(action, "Mute", sizeof(action));
 		}
 
-		idx = atoi(ucd);
+		if (ast_str_to_int(ucd, &idx)) {
+			/* Non-numeric ConfList token — keep idx unmatched
+			 * so the lookup below reports "not in the bridge"
+			 * rather than acting on a wrong index. */
+			idx = 0;
+		}
 		target_peer = bridge_peer_channel_ref(channel, bridge, idx);
 		if (!target_peer) {
 			ast_log(LOG_NOTICE,

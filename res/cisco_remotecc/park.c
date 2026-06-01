@@ -337,7 +337,7 @@ static void park_stasis_cb(void *data, struct stasis_subscription *sub,
 	}
 	payload = stasis_message_data(message);
 	if (!payload || !payload->parkee || !payload->parkee->base
-		|| strcmp(prd->parkee_uniqueid, payload->parkee->base->uniqueid)) {
+		|| strcmp(prd->parkee_uniqueid, payload->parkee->base->uniqueid) != 0) {
 		return;   /* not the call we parked */
 	}
 	event = park_event_name(payload->event_type);
@@ -350,8 +350,8 @@ static void park_stasis_cb(void *data, struct stasis_subscription *sub,
 	terminal = payload->event_type != PARKED_CALL;
 
 	if (prd->monitor) {
-		queue_park_orbit_notify(prd->endpoint, payload->parkingspace,
-			++prd->version, terminal ? 0 : payload->timeout,
+		queue_park_orbit_notify(prd->endpoint, (int) payload->parkingspace,
+			++prd->version, terminal ? 0 : (unsigned int) payload->timeout,
 			terminal, event, terminal ? "terminated" : "confirmed");
 	} else {
 		char statustext[24];

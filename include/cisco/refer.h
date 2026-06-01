@@ -25,8 +25,8 @@
  * struct ast_sip_endpoint *), but does not require cisco/rdata.h.
  */
 
-#ifndef _RES_PJSIP_CISCO_REFER_H
-#define _RES_PJSIP_CISCO_REFER_H
+#ifndef RES_PJSIP_CISCO_REFER_H
+#define RES_PJSIP_CISCO_REFER_H
 
 #include "asterisk.h"
 
@@ -136,4 +136,4 @@ struct ast_sip_contact *cisco_endpoint_find_contact_from_rdata(
 void cisco_remotecc_multipart_add_part(pj_pool_t *pool,
 	pjsip_msg_body *multipart, const char *xml);
 
-#endif /* _RES_PJSIP_CISCO_REFER_H */
+#endif /* RES_PJSIP_CISCO_REFER_H */

@@ -353,7 +353,7 @@ static int send_unsolicited_notify(struct ast_sip_endpoint *endpoint,
 		"cisco-unsolicited-blf: unsolicited NOTIFY sent for %s@%s -> %s "
 		"(exten_state=0x%x presence=%s)\n",
 		exten, context, contact->uri, exten_state,
-		ast_presence_state2str(presence_state));
+		ast_presence_state2str((enum ast_presence_state) presence_state));
 	return 0;
 }
 

@@ -318,7 +318,7 @@ static int handle_remotecc_xml(struct ast_sip_endpoint *endpoint,
 
 	root = ast_xml_get_root(doc);
 	if (!root || strcasecmp(ast_xml_node_get_name(root),
-			"x-cisco-remotecc-request")) {
+			"x-cisco-remotecc-request") != 0) {
 		ast_debug(2, "cisco-remotecc: missing x-cisco-remotecc-request root\n");
 		response_code = 400;
 		goto done;

@@ -11,8 +11,8 @@
  * symbols at load time.
  */
 
-#ifndef _RES_PJSIP_CISCO_SESSION_H
-#define _RES_PJSIP_CISCO_SESSION_H
+#ifndef RES_PJSIP_CISCO_SESSION_H
+#define RES_PJSIP_CISCO_SESSION_H
 
 #include "asterisk.h"
 
@@ -111,4 +111,4 @@ void cisco_conf_mark_joined(struct ast_channel *chan);
 struct ast_channel *cisco_conf_find_last_joined(struct ast_bridge *bridge,
 	struct ast_channel *exclude);
 
-#endif /* _RES_PJSIP_CISCO_SESSION_H */
+#endif /* RES_PJSIP_CISCO_SESSION_H */

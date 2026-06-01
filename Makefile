@@ -250,6 +250,27 @@ CFLAGS               ?= -O2 -g
 #   -Wformat=2               — stricter format-string checking on top of
 #                              -Wall's -Wformat (catches non-literal
 #                              format strings and %n misuse).
+#   -Wconversion             — implicit conversions that may change a
+#   -Wsign-conversion          value or its sign (size_t<->int, the
+#                              snprintf/ast_db_get width mismatches,
+#                              pj_ssize_t lengths, etc). The nearest C
+#                              gets to type-safety enforcement.
+#
+# Third-party headers are included with -isystem, not -I. Asterisk and
+# pjproject macros/inline functions trip -Wconversion hundreds of times
+# (ao2 containers, pj_str_t arithmetic, …) and we can't fix code we
+# don't own. -isystem marks those trees as system headers, so GCC
+# suppresses warnings originating inside them (and inside their macro
+# expansions) while still flagging conversions written in OUR sources.
+# Our own headers stay on -Iinclude so they remain in scope for warnings.
+PJPROJECT_ISYSTEM_CFLAGS := $(patsubst -I%,-isystem %,$(PJPROJECT_CFLAGS))
+
+# Opt-in instrumentation hooks. Empty for a normal build; the
+# `sanitize-ub` target sets them to build a UBSan variant. Appended last
+# so they sit after the warning/-Werror set without disturbing it.
+SANITIZE_CFLAGS  ?=
+SANITIZE_LDFLAGS ?=
+
 override CFLAGS      += -fPIC -Wall -Werror -Wno-unused-function \
                         -Wstrict-prototypes -Wmissing-prototypes \
                         -Wmissing-declarations -Wold-style-definition \
@@ -257,11 +278,13 @@ override CFLAGS      += -fPIC -Wall -Werror -Wno-unused-function \
                         -Wshadow -Wpointer-arith -Wjump-misses-init \
                         -Wlogical-op -Wduplicated-cond -Wduplicated-branches \
                         -Wvla -Wformat=2 \
-                        -I$(ASTERISK_INCLUDE_DIR) \
+                        -Wconversion -Wsign-conversion \
+                        -isystem $(ASTERISK_INCLUDE_DIR) \
                         -Iinclude \
-                        $(PJPROJECT_CFLAGS)
+                        $(PJPROJECT_ISYSTEM_CFLAGS) \
+                        $(SANITIZE_CFLAGS)
 LDFLAGS              ?=
-override LDFLAGS     += -shared
+override LDFLAGS     += -shared $(SANITIZE_LDFLAGS)
 
 # --------------------------------------------------------------------
 # Modules. Each MODULE has a short feature name; the .so install name
@@ -316,7 +339,8 @@ ALL_SOS  := $(foreach m,$(MODULES),$($(m)_SO))
 
 DOC_XML  ?= $(DOC_BUILD_DIR)/res_pjsip_cisco-en_US.xml
 
-.PHONY: all clean install uninstall doc check check-headers help tests
+.PHONY: all clean install uninstall doc check check-headers help tests \
+        compile-commands tidy cppcheck sanitize-ub
 
 # `all` is the default goal even when targets earlier in the file
 # (e.g. the FORCE phony in the pjproject patches block) might
@@ -408,6 +432,123 @@ $(DOC_XML): $(ALL_SOURCES)
 	) > $@
 
 # --------------------------------------------------------------------
+# Static analysis (clang-tidy).
+#
+# clang-tidy reasons about each translation unit using the exact -I / -D
+# flags it was compiled with — which, for this project, is load-bearing:
+# the pjproject config_site.h overlay shifts struct offsets inside
+# pjsip_rx_data / pjmedia_sdp_media / pjsip_endpoint (CLAUDE.md's
+# "header-mismatch trap"). So rather than hand-maintain a flag list, we
+# record a real build with Bear (https://github.com/rizsotto/Bear) into
+# compile_commands.json and let clang-tidy read that.
+#
+# Because the flags come from the build, `make tidy` is only as correct
+# as the build it wraps: invoke it the same way you build — ideally
+#   make tidy ASTERISK_SRC_DIR=/path/to/asterisk-source
+# so the overlay is applied and clang-tidy sees the runtime ABI.
+#
+# Advisory: the checks live in .clang-tidy and never gate the build
+# (the -Werror warning set in CFLAGS is the blocking line). Use it to
+# surface null-deref / leak / refcount-shaped bugs the compiler can't.
+# --------------------------------------------------------------------
+
+COMPILE_COMMANDS ?= compile_commands.json
+
+# Regenerate the compile DB by recording a clean build. FORCE-style:
+# we always rebuild it rather than timestamp-tracking every source,
+# since a stale DB silently analyses the wrong flags. `make clean`
+# first so bear captures every TU (incremental builds skip up-to-date
+# objects, leaving them out of the DB).
+compile-commands:
+	@command -v bear >/dev/null 2>&1 || { \
+	    echo "bear not found. Install with: sudo apt install bear" >&2; \
+	    exit 1; }
+	$(MAKE) clean
+	bear --output $(COMPILE_COMMANDS) -- $(MAKE) all
+
+tidy: compile-commands
+	@command -v clang-tidy >/dev/null 2>&1 || { \
+	    echo "clang-tidy not found. Install with: sudo apt install clang-tidy" >&2; \
+	    exit 1; }
+	clang-tidy -p . $(ALL_SOURCES)
+
+# --------------------------------------------------------------------
+# Cppcheck — a second static-analysis opinion. Different engine to
+# clang-tidy: it catches things clang's analyzer misses (and vice
+# versa) and runs without compiling.
+#
+# We feed it the same include set the build uses, but as -I (not the
+# build's -isystem): cppcheck SKIPS -isystem headers, so asterisk's
+# AST_DECLARE_STRING_FIELDS / ao2 macros would go unresolved and it
+# would emit spurious syntaxError / unknownMacro. With them as -I the
+# macros expand and our sources parse cleanly; we then suppress findings
+# located in the third-party trees so only our code is reported.
+#
+# Pass ASTERISK_SRC_DIR the way you build:
+#   make cppcheck ASTERISK_SRC_DIR=/path/to/asterisk-source
+# --------------------------------------------------------------------
+
+# Header dirs whose findings we silence (asterisk + whatever pjproject
+# dirs PJPROJECT_CFLAGS resolved to — we don't own that code).
+CPPCHECK_INC_DIRS := $(ASTERISK_INCLUDE_DIR) \
+                     $(patsubst -I%,%,$(filter -I%,$(PJPROJECT_CFLAGS)))
+
+CPPCHECK_FLAGS ?= --enable=warning,performance,portability \
+                  --check-level=exhaustive --inline-suppr --quiet \
+                  --error-exitcode=1 \
+                  --suppress=missingIncludeSystem \
+                  --suppress=unmatchedSuppression
+
+cppcheck:
+	@command -v cppcheck >/dev/null 2>&1 || { \
+	    echo "cppcheck not found. Install with: sudo apt install cppcheck" >&2; \
+	    exit 1; }
+	cppcheck $(CPPCHECK_FLAGS) \
+	    $(addprefix --suppress=*:,$(addsuffix /*,$(CPPCHECK_INC_DIRS))) \
+	    -DAST_MODULE_SELF_SYM=cppcheck_stub -DAST_MODULE=\"cppcheck\" \
+	    -Iinclude -I$(ASTERISK_INCLUDE_DIR) $(PJPROJECT_CFLAGS) \
+	    res/
+
+# --------------------------------------------------------------------
+# UBSan build variant. Compiles the modules with
+# -fsanitize=undefined (runtime mode — the .so gains a NEEDED on
+# libubsan, which asterisk's dlopen pulls in), so undefined behaviour in
+# OUR code — signed overflow, bad shifts, null/misaligned deref,
+# out-of-range enum loads, the runtime side of the conversions
+# -Wconversion flags statically — is reported with a file:line message
+# at runtime. Unlike ASan, UBSan needs no early init, so it drops into a
+# normally-launched asterisk with no LD_PRELOAD.
+#
+# Output goes to a SEPARATE tree ($(OBJ_DIR)/sanitize-ub) so it never
+# overwrites the production .so — a sanitized module must not be
+# `make install`ed onto a real PBX by accident. To use it:
+#
+#   make sanitize-ub ASTERISK_SRC_DIR=/path/to/asterisk-source
+#   sudo install -m0644 $(OBJ_DIR)/sanitize-ub/res_pjsip_cisco_*.so \
+#       <asterisk modules dir>
+#   # then run asterisk with, e.g.:
+#   #   UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0:log_path=/tmp/ubsan
+#   # exercise via the real phone / tests/sipp, then read /tmp/ubsan.*
+#
+# halt_on_error=0 keeps the PBX alive and logs every hit; set =1 to
+# abort on the first. print_stacktrace needs llvm-symbolizer or addr2line
+# on PATH for symbolised frames. Build with a lower -O for cleaner
+# traces if needed, e.g. CFLAGS='-O1 -g'.
+# --------------------------------------------------------------------
+
+sanitize-ub:
+	$(MAKE) all \
+	    OBJ_DIR='$(OBJ_DIR)/sanitize-ub' \
+	    SANITIZE_CFLAGS='-fsanitize=undefined -fno-omit-frame-pointer' \
+	    SANITIZE_LDFLAGS='-fsanitize=undefined'
+	@echo
+	@echo "UBSan modules built in $(OBJ_DIR)/sanitize-ub/."
+	@echo "Install them over the production .so on a TEST asterisk only,"
+	@echo "then run with UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0"
+	@echo "and exercise the call flows. See the sanitize-ub comment in the"
+	@echo "Makefile for the full recipe."
+
+# --------------------------------------------------------------------
 # Sanity check that asterisk-dev headers are installed.
 # --------------------------------------------------------------------
 
@@ -497,6 +638,14 @@ help:
 	@echo "  make clean      - remove build artefacts (rm -rf $(OBJ_DIR)/)"
 	@echo "  make check      - report which modules are loaded in a"
 	@echo "                    running asterisk (run as root)"
+	@echo "  make tidy       - run clang-tidy static analysis (needs bear"
+	@echo "                    + clang-tidy; pass ASTERISK_SRC_DIR as you"
+	@echo "                    would for a build)"
+	@echo "  make cppcheck   - run cppcheck static analysis (second"
+	@echo "                    opinion; needs cppcheck; pass ASTERISK_SRC_DIR)"
+	@echo "  make sanitize-ub - build a UBSan variant into OBJ_DIR/sanitize-ub"
+	@echo "                    for runtime UB checking on a TEST asterisk"
+	@echo "  make compile-commands - regenerate compile_commands.json only"
 	@echo
 	@echo "Common overrides:"
 	@echo "  ASTERISK_INCLUDE_DIR (default: $(ASTERISK_INCLUDE_DIR))"

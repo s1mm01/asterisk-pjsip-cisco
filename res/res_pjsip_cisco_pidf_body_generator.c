@@ -96,7 +96,7 @@ static int cisco_pidf_supplement_body(void *body, void *data)
 	struct ast_sip_exten_state_data *state_data = data;
 	pj_xml_node *person, *activities;
 	int exten_state = state_data->exten_state;
-	int presence_state = state_data->presence_state;
+	int presence_state = (int) state_data->presence_state;
 
 	xmlns_if_absent(state_data->pool, pres, "xmlns:dm", XMLNS_DM);
 	xmlns_if_absent(state_data->pool, pres, "xmlns:e",  XMLNS_E_RPID);
@@ -205,7 +205,7 @@ static void cisco_cpim_to_string(void *body, struct ast_str **str)
 	int size;
 
 	do {
-		size = pjpidf_print(pres, ast_str_buffer(*str), ast_str_size(*str) - 1);
+		size = pjpidf_print(pres, ast_str_buffer(*str), (int) (ast_str_size(*str) - 1));
 		if (size <= AST_PJSIP_XML_PROLOG_LEN) {
 			ast_str_make_space(str, ast_str_size(*str) * 2);
 			++growths;

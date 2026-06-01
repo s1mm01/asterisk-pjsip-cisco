@@ -69,10 +69,10 @@ int cisco_copy_sip_uri_hostport(const pjsip_sip_uri *uri,
 	}
 
 	if (uri->port) {
-		int port_used = snprintf(buf + used, buflen - used, ":%d",
+		int port_used = snprintf(buf + used, buflen - (size_t) used, ":%d",
 			uri->port);
 
-		if (port_used < 0 || port_used >= (int) (buflen - used)) {
+		if (port_used < 0 || port_used >= (int) (buflen - (size_t) used)) {
 			return -1;
 		}
 	}

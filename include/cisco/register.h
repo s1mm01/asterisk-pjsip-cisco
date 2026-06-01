@@ -21,8 +21,8 @@
  * pjsip_tx_data plumbing exposed by the response hook.
  */
 
-#ifndef _RES_PJSIP_CISCO_REGISTER_H
-#define _RES_PJSIP_CISCO_REGISTER_H
+#ifndef RES_PJSIP_CISCO_REGISTER_H
+#define RES_PJSIP_CISCO_REGISTER_H
 
 #include "asterisk.h"
 
@@ -190,4 +190,4 @@ int cisco_register_should_fire(struct ast_sip_endpoint *endpoint,
 	const char **endpoint_id_out, char **canonical_out);
 /* @} */
 
-#endif /* _RES_PJSIP_CISCO_REGISTER_H */
+#endif /* RES_PJSIP_CISCO_REGISTER_H */

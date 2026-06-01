@@ -147,6 +147,69 @@ Rollback is one SEP-file edit + phone restart.
 | Server crashes shortly after `module unload res_pjsip_pidf_body_generator.so` | Don't hot-unload body generators with active subscriptions — use `systemctl restart asterisk` instead. Our cisco modules guard against this themselves (refuse runtime unload via `ast_shutdown_final`), but stock pidf has no such guard. |
 | Startup log shows `WARNING: A body generator for application/cpim-pidf+xml is already registered` | Expected and harmless — that's stock `res_pjsip_xpidf_body_generator` declining after `res_pjsip_cisco_pidf_body_generator` won the slot via earlier `load_pri`. |
 
+## Runtime UB checking (UBSan)
+
+The bench above exercises real call flows; `make sanitize-ub` turns that
+same exercise into a memory-correctness check. It rebuilds the modules
+with `-fsanitize=undefined`, so undefined behaviour in our code — signed
+overflow, bad shifts, null/misaligned deref, out-of-range enum loads,
+the runtime side of the conversions `-Wconversion` only catches at
+compile time — is reported with a `file:line: runtime error: …` message
+while the phone drives traffic. Unlike ASan, UBSan needs no early init,
+so it loads into a normally-launched asterisk with no `LD_PRELOAD`.
+
+Run this against the **`:5160` test instance only** — never `make
+install` a sanitized `.so` onto a production PBX.
+
+1. **Build the UBSan variant** (same `ASTERISK_SRC_DIR` you build with —
+   struct layouts must still match the runtime asterisk):
+   ```
+   make sanitize-ub ASTERISK_SRC_DIR=/path/to/asterisk-source
+   ```
+   The `.so` land in `obj/sanitize-ub/`, kept apart from the production
+   build so they can't be installed by accident.
+
+2. **Install them over the test asterisk's modules** and note where the
+   originals were so you can roll back:
+   ```
+   MODDIR=$(asterisk -rx 'core show settings' | sed -n 's/.*Module directory:[[:space:]]*//p')
+   sudo cp "$MODDIR"/res_pjsip_cisco_*.so /tmp/cisco-so-backup/
+   sudo install -m0644 obj/sanitize-ub/res_pjsip_cisco_*.so "$MODDIR"/
+   ```
+
+3. **Restart asterisk with UBSan configured.** `halt_on_error=0` keeps
+   the PBX alive and logs every hit (use `=1` to abort on the first);
+   `print_stacktrace=1` needs `llvm-symbolizer` or `addr2line` on `PATH`
+   for symbolised frames:
+   ```
+   sudo systemctl set-environment \
+     UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0:log_path=/tmp/ubsan
+   sudo systemctl restart asterisk
+   ```
+   (Or export `UBSAN_OPTIONS` however your asterisk is launched.)
+
+4. **Exercise the modules** — run through the bench steps above
+   (register the phone, press the softkeys, place calls) and/or
+   `bash tests/sipp/run.sh`.
+
+5. **Read the reports:**
+   ```
+   cat /tmp/ubsan.*
+   # Each entry: <our-file>:<line>: runtime error: <description>
+   ```
+   No files / empty output = no UB tripped on the paths you exercised.
+
+6. **Roll back** when done — reinstall the production `.so` and restart:
+   ```
+   sudo install -m0644 /tmp/cisco-so-backup/res_pjsip_cisco_*.so "$MODDIR"/
+   sudo systemctl unset-environment UBSAN_OPTIONS
+   sudo systemctl restart asterisk
+   ```
+
+ASan (heap/use-after-free) would need `LD_PRELOAD=libasan.so` plus
+`ASAN_OPTIONS=detect_leaks=0` and isn't wired up here; MSan is
+impractical for a module loaded into a non-instrumented asterisk.
+
 ## What "working" looks like — wire signature
 
 For a fresh power-cycle of a Cisco 7975 against PJSIP with all ten

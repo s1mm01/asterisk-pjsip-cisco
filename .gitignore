@@ -1,5 +1,9 @@
 # Build artefacts
 obj/
+# clang-tidy compile database (regenerate with `make compile-commands`)
+# and its analysis cache
+compile_commands.json
+.cache/
 tests/unit/*.o
 tests/unit/test_*
 !tests/unit/test_*.c

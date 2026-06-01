@@ -225,6 +225,54 @@ jobs:
             -I${{ github.workspace }}/pjproject/pjsip/include
         run: make ASTERISK_SRC_DIR=${{ github.workspace }}/asterisk-src
 
+      - name: static analysis (clang-tidy)
+        # Advisory, non-blocking. Runs on a single matrix cell (the 22
+        # build) — the analysis is ABI-independent enough that repeating
+        # it per cell would only burn minutes. continue-on-error keeps a
+        # finding from failing the build; it annotates the run log only.
+        #
+        # bear records the real `make` so compile_commands.json carries
+        # the exact -I / -D set this job builds with (same ASTERISK_SRC_DIR
+        # + PJPROJECT_INCLUDE as the `build` step above) — clang-tidy then
+        # reasons about the same headers the .so files were compiled
+        # against, not some stock pjproject it found on PATH. --extra-arg
+        # silences clang's "unknown warning option" noise for the gcc-only
+        # -W flags bear captured from CFLAGS.
+        if: matrix.asterisk_branch == '22'
+        continue-on-error: true
+        env:
+          PJPROJECT_INCLUDE: >-
+            -DPJ_AUTOCONF=1
+            -I${{ github.workspace }}/pjproject/pjlib/include
+            -I${{ github.workspace }}/pjproject/pjlib-util/include
+            -I${{ github.workspace }}/pjproject/pjnath/include
+            -I${{ github.workspace }}/pjproject/pjmedia/include
+            -I${{ github.workspace }}/pjproject/pjsip/include
+        run: |
+          sudo apt-get install -y bear clang-tidy
+          make tidy ASTERISK_SRC_DIR=${{ github.workspace }}/asterisk-src
+
+      - name: static analysis (cppcheck)
+        # Advisory, non-blocking second opinion — different engine to
+        # clang-tidy. Same single-cell rationale as the clang-tidy step.
+        # Reuses the build's include set (asterisk-src + the unpacked
+        # pjproject headers via PJPROJECT_INCLUDE) so asterisk macros
+        # resolve and our sources parse; third-party findings are
+        # suppressed by the make target.
+        if: matrix.asterisk_branch == '22'
+        continue-on-error: true
+        env:
+          PJPROJECT_INCLUDE: >-
+            -DPJ_AUTOCONF=1
+            -I${{ github.workspace }}/pjproject/pjlib/include
+            -I${{ github.workspace }}/pjproject/pjlib-util/include
+            -I${{ github.workspace }}/pjproject/pjnath/include
+            -I${{ github.workspace }}/pjproject/pjmedia/include
+            -I${{ github.workspace }}/pjproject/pjsip/include
+        run: |
+          sudo apt-get install -y cppcheck
+          make cppcheck ASTERISK_SRC_DIR=${{ github.workspace }}/asterisk-src
+
       - name: verify .so files produced
         run: |
           for m in res_pjsip_cisco_endpoint \
