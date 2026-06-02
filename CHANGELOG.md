@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.7.0 — 2026-06-03
+
+BLF presence-accuracy fixes — alerting suppression on busy/DND lines
+and state-change NOTIFY de-duplication — plus a static-analysis and
+sanitizer tool-chain with the cleanups it surfaced. No sorcery-schema
+change.
+
+### Suppress `<ce:alerting/>` on engaged or DND lines
+
+Deliberate divergence from the chan_sip cisco-usecallmanager patch,
+which emits `<ce:alerting/>` whenever `AST_EXTENSION_RINGING` is set —
+even if the watched extension is already INUSE/ONHOLD/BUSY or in DND.
+On a busy line that made every watcher's BLF button flash "alerting"
+on a second call, which reads as "free to pick up" when it isn't.
+INUSE/ONHOLD/BUSY now wins over RINGING, and RINGING is suppressed
+entirely under `AST_PRESENCE_DND`. Applies to both the unsolicited-
+NOTIFY body builder and the SUBSCRIBE body generator; the golden test
+covers ringing+INUSE, ringing+BUSY, and ringing+DND.
+
+### De-duplicate state-change presence NOTIFYs
+
+The watcher tracks the last activity bits it sent per watched
+extension and skips a NOTIFY fanout when the bits are unchanged,
+cutting redundant unsolicited NOTIFYs when an unrelated facet of a
+hint changes. The dedup baseline and the NOTIFY body are taken from a
+single state snapshot; the comparison and baseline-advance run on the
+watcher serializer to close a stale-bits race; and the baseline only
+advances after a clean fanout, so a failed send re-fires next time.
+New SIPp scenarios exercise the activity-dedup clearing NOTIFY and the
+DND-dedup path, gated on observed events rather than fixed sleeps.
+
+### Static-analysis + sanitizer tool-chain
+
+- **clang-tidy** — `.clang-tidy` (analyzer + bugprone checks tuned for
+  Asterisk C) with `make tidy` / `make compile-commands`. The compile
+  database is recorded with bear so the pjproject `config_site.h`
+  overlay is in scope and clang-tidy reasons about the runtime ABI.
+- **cppcheck** — `make cppcheck`, a second-opinion engine. Third-party
+  headers are fed as `-I` so Asterisk macros resolve, with their
+  findings suppressed so only our code is reported.
+- **UBSan** — `make sanitize-ub` builds a `-fsanitize=undefined`
+  variant into a separate `obj/sanitize-ub/` tree (so a sanitized
+  `.so` can't be installed over production). `tests/README.md` carries
+  the bench recipe.
+- Both analysers run non-blocking in CI on the asterisk-22 cell.
+
+### `-Wconversion` / `-Wsign-conversion` under `-Werror`
+
+Implicit value- or sign-changing conversions are now build errors —
+the nearest C gets to type-safety enforcement. Asterisk and pjproject
+headers moved to `-isystem` so their ~440 unfixable conversion
+warnings (ao2 containers, `pj_str_t` arithmetic) are suppressed while
+ours surface. The conversions this flagged in our code — `size_t`/`int`
+width mismatches, `pj_ssize_t` lengths, `int`→`char`, the
+`ast_presence_state` enum↔int signedness clang catches — are now
+explicit casts.
+
+### Code hygiene surfaced by the new checks
+
+Header-guard identifiers no longer lead with `_` (reserved by the C
+standard); `atoi` replaced with `ast_str_to_int` in the conference
+applicationid / ConfList parsing (parse errors no longer silently read
+as 0); and implicit string comparisons (`if (strcmp(...))`) made
+explicit (`!= 0`).
+
 ## v0.6.0 — 2026-05-19
 
 Build-mode rename, harvest-preservation fix, and a working CI test
