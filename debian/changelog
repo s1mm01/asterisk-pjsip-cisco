@@ -1,3 +1,38 @@
+asterisk-pjsip-cisco (0.7.0-1) unstable; urgency=medium
+
+  * blf: suppress <ce:alerting/> when the watched line is already
+    INUSE/ONHOLD/BUSY or in DND. INUSE/ONHOLD/BUSY now wins over
+    RINGING, and RINGING is dropped entirely under AST_PRESENCE_DND,
+    so a busy line no longer flashes "alerting" (free-to-pick-up) on
+    every watcher. Applies to both the unsolicited-NOTIFY and
+    SUBSCRIBE body paths; golden test covers ringing+INUSE/BUSY/DND.
+  * blf: de-duplicate state-change presence NOTIFYs. The watcher
+    tracks the last activity bits sent per watched extension and
+    skips a fanout when they are unchanged. Snapshot, compare, and
+    baseline-advance run on the watcher serializer to close a
+    stale-bits race; the baseline advances only after a clean fanout
+    so a failed send re-fires next time. New SIPp scenarios cover the
+    activity-dedup clearing NOTIFY and the DND-dedup path.
+  * build: add a static-analysis / sanitizer tool-chain — clang-tidy
+    (.clang-tidy + make tidy / compile-commands, compile DB recorded
+    with bear so the pjproject config_site.h overlay is in scope),
+    cppcheck (make cppcheck, third-party headers as -I so Asterisk
+    macros resolve and their findings are suppressed), and a UBSan
+    build variant (make sanitize-ub, isolated output tree). Both
+    analysers run non-blocking in CI on the asterisk-22 cell.
+  * build: enable -Wconversion / -Wsign-conversion under -Werror.
+    Asterisk and pjproject headers moved to -isystem so their
+    ~440 unfixable conversion warnings are suppressed while ours
+    surface; the conversions flagged in our code are now explicit
+    casts (size_t/int widths, pj_ssize_t lengths, int->char,
+    ast_presence_state enum<->int).
+  * cisco: code hygiene surfaced by the new checks — header-guard
+    identifiers no longer lead with '_' (reserved), atoi replaced
+    with ast_str_to_int in the conference applicationid / ConfList
+    parsing, and implicit string compares made explicit (!= 0).
+
+ -- Andrew Simmonds <simmo@rinseout.org>  Wed, 03 Jun 2026 12:00:00 +0800
+
 asterisk-pjsip-cisco (0.6.0-1) unstable; urgency=medium
 
   * Build mode: ASTERISK_SRC_DIR replaces PJPROJECT_DIR (the
