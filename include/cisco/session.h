@@ -37,7 +37,8 @@
 struct ast_channel *cisco_session_channel_ref(struct ast_sip_session *session);
 
 /*!
- * \brief Resolve a Cisco-XML &lt;dialogid&gt; triple to a live ast_sip_session.
+ * \brief Resolve a Cisco-XML &lt;dialogid&gt; triple to a live ast_sip_session
+ *        owned by the requesting endpoint.
  *
  * Cisco RemoteCC and Conference XML dialogids are encoded from the
  * phone's viewpoint: the XML's localtag is the phone's tag and the
@@ -49,12 +50,22 @@ struct ast_channel *cisco_session_channel_ref(struct ast_sip_session *session);
  * session ref-bump, so the dialog can't be torn down between match and
  * the ref. The returned session survives the dialog dec_lock.
  *
+ * \param owner_endpoint_id Endpoint id of the phone that sent the REFER.
+ *        \c pjsip_ua_find_dialog matches purely on the call-id + tag
+ *        triple, which is observable to other phones (BLF dialog-info
+ *        NOTIFYs, shared-line appearances, on-net SIP captures). To stop
+ *        an authenticated endpoint from acting on another endpoint's call
+ *        by quoting its dialogid, the matched dialog must belong to this
+ *        endpoint, or to a sibling line of the same physical phone
+ *        (aliases=). A phone only ever references its own call leg, so
+ *        legitimate use is unaffected. Must be non-empty.
+ *
  * \retval ref-bumped session; caller must \c ao2_cleanup
- * \retval NULL on missing args or no dialog match
+ * \retval NULL on missing args, no dialog match, or an ownership mismatch
  */
 struct ast_sip_session *cisco_dialog_session_lookup(
 	const char *call_id, const char *phone_local_tag,
-	const char *phone_remote_tag);
+	const char *phone_remote_tag, const char *owner_endpoint_id);
 
 /*!
  * \brief Send a REFER response with Refer-Sub: false. Handles both
