@@ -276,7 +276,7 @@ static int conflist_send_task(void *obj)
 	endpoint_id = ast_sorcery_object_get_id(data->endpoint);
 
 	session = cisco_dialog_session_lookup(data->dialog_id.call_id,
-		data->dialog_id.local_tag, data->dialog_id.remote_tag);
+		data->dialog_id.local_tag, data->dialog_id.remote_tag, endpoint_id);
 	if (!session) {
 		ast_log(LOG_NOTICE,
 			"cisco-conference: %s sent ConfList for unknown dialog "
@@ -307,10 +307,11 @@ static int conflist_send_task(void *obj)
 
 	/* Synthesise a stable per-bridge id for the menu URLs. The menu's
 	 * <confid> is consulted by the firmware when subsequent
-	 * datapassthroughreq REFERs come in for Mute/Remove/Update. Truncating
-	 * the bridge pointer isn't ideal but matches the chan_sip patch's
-	 * per-conference counter shape. */
-	conference_id = (unsigned int)(uintptr_t) bridge;
+	 * datapassthroughreq REFERs come in for Mute/Remove/Update. Hash the
+	 * bridge's immutable uniqueid rather than truncating its pointer —
+	 * stable for the bridge's lifetime, but it doesn't leak a live heap
+	 * address (weakening ASLR) onto the wire to the phone. */
+	conference_id = (unsigned int) ast_str_hash(bridge->uniqueid);
 
 	send_menu_to_contact(data->endpoint, data->contact,
 		channel, bridge, conference_id);
@@ -425,7 +426,7 @@ static int conflist_action_send_task(void *obj)
 	ucd         = data->user_call_data;
 
 	session = cisco_dialog_session_lookup(data->dialog_id.call_id,
-		data->dialog_id.local_tag, data->dialog_id.remote_tag);
+		data->dialog_id.local_tag, data->dialog_id.remote_tag, endpoint_id);
 	if (!session) {
 		ast_log(LOG_NOTICE,
 			"cisco-conference: %s ConfList action for unknown dialog "
@@ -493,8 +494,10 @@ static int conflist_action_send_task(void *obj)
 		}
 	}
 
-	/* Re-emit the menu so the user sees the post-action state. */
-	conference_id = (unsigned int)(uintptr_t) bridge;
+	/* Re-emit the menu so the user sees the post-action state. Same
+	 * bridge-uniqueid hash as the initial emit, so <confid> stays stable
+	 * across the menu's action round-trips. */
+	conference_id = (unsigned int) ast_str_hash(bridge->uniqueid);
 	send_menu_to_contact(data->endpoint, data->contact, channel, bridge,
 		conference_id);
 

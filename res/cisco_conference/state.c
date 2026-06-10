@@ -17,6 +17,7 @@
 #include "asterisk/bridge_features.h"
 #include "asterisk/channel.h"
 #include "asterisk/callerid.h"
+#include "asterisk/logger.h"
 #include "asterisk/pbx.h"
 #include "asterisk/strings.h"
 #include "asterisk/utils.h"
@@ -173,12 +174,29 @@ int cisco_selected_cmp(void *obj, void *arg, int flags)
 	return CMP_MATCH | CMP_STOP;
 }
 
+struct selected_count_ctx {
+	const char *endpoint_id;
+	int count;
+};
+
+static int cisco_selected_count_cb(void *obj, void *arg, int flags)
+{
+	const struct cisco_selected *s = obj;
+	struct selected_count_ctx *ctx = arg;
+
+	if (!strcasecmp(s->endpoint_id, ctx->endpoint_id)) {
+		ctx->count++;
+	}
+	return 0;
+}
+
 void cisco_selected_add(const char *endpoint_id,
 	const struct conference_dialog_id *dialog_id)
 {
 	struct cisco_selected key;
 	struct cisco_selected *existing;
 	struct cisco_selected *fresh;
+	struct selected_count_ctx ctx = { .endpoint_id = endpoint_id, .count = 0 };
 
 	if (!cisco_selected_calls || ast_strlen_zero(endpoint_id)) {
 		return;
@@ -189,6 +207,23 @@ void cisco_selected_add(const char *endpoint_id,
 	existing = ao2_find(cisco_selected_calls, &key, OBJ_SEARCH_OBJECT);
 	if (existing) {
 		ao2_ref(existing, -1);
+		return;
+	}
+
+	/* Cap stored selections per endpoint. A Join consumes at most
+	 * JOIN_MAX_SELECTED, so storing more is useless — and unbounded
+	 * storage would let a phone exhaust memory by pressing Select with
+	 * distinct (even fabricated) dialogids that no Join ever consumes.
+	 * Entries are only freed by an exact Unselect or by the clear that
+	 * runs after a successful Join, so without this cap the container
+	 * could grow without limit. */
+	ao2_callback(cisco_selected_calls, OBJ_NODATA, cisco_selected_count_cb,
+		&ctx);
+	if (ctx.count >= JOIN_MAX_SELECTED) {
+		ast_log(LOG_NOTICE,
+			"cisco-conference: %s already has %d calls selected (max %d); "
+			"ignoring Select until one is unselected or a Join consumes "
+			"them\n", endpoint_id, ctx.count, JOIN_MAX_SELECTED);
 		return;
 	}
 

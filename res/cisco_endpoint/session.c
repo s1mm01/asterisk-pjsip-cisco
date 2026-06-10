@@ -22,6 +22,7 @@
 #include "asterisk/time.h"
 #include "asterisk/utils.h"
 
+#include "cisco/endpoint.h"
 #include "cisco/session.h"
 
 struct ast_channel *cisco_session_channel_ref(struct ast_sip_session *session)
@@ -42,18 +43,69 @@ struct ast_channel *cisco_session_channel_ref(struct ast_sip_session *session)
 	return channel;
 }
 
+/* True if \a cisco lists \a id in its aliases= (comma-separated). */
+static int cisco_alias_list_has(struct cisco_endpoint *cisco, const char *id)
+{
+	char *aliases;
+	char *alias;
+
+	if (!cisco || ast_strlen_zero(cisco->aliases)) {
+		return 0;
+	}
+	aliases = ast_strdupa(cisco->aliases);
+	while ((alias = ast_strip(strsep(&aliases, ",")))) {
+		if (!ast_strlen_zero(alias) && !strcasecmp(alias, id)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* True if endpoint ids \a a and \a b name the same physical Cisco device:
+ * either identical, or one lists the other in its aliases= (a multi-line
+ * phone has one cisco endpoint per line button). Checked in both
+ * directions because aliases= is conventionally populated only on the
+ * primary line's object, but a device-level RemoteCC REFER can be
+ * identified as any of the lines — whichever won the MAC slot at REGISTER
+ * (see cisco_mac_lookup_by_endpoint). Two sorcery lookups on a control
+ * REFER path, never the media path. */
+static int cisco_same_device(const char *a, const char *b)
+{
+	struct cisco_endpoint *cisco;
+	int same;
+
+	if (ast_strlen_zero(a) || ast_strlen_zero(b)) {
+		return 0;
+	}
+	if (!strcasecmp(a, b)) {
+		return 1;
+	}
+	cisco = cisco_endpoint_get(a);
+	same = cisco_alias_list_has(cisco, b);
+	ao2_cleanup(cisco);
+	if (same) {
+		return 1;
+	}
+	cisco = cisco_endpoint_get(b);
+	same = cisco_alias_list_has(cisco, a);
+	ao2_cleanup(cisco);
+	return same;
+}
+
 struct ast_sip_session *cisco_dialog_session_lookup(
 	const char *call_id, const char *phone_local_tag,
-	const char *phone_remote_tag)
+	const char *phone_remote_tag, const char *owner_endpoint_id)
 {
 	pj_str_t call_id_pj;
 	pj_str_t pj_local_tag;
 	pj_str_t pj_remote_tag;
 	pjsip_dialog *dlg;
 	struct ast_sip_session *session;
+	const char *dialog_endpoint_id;
 
 	if (ast_strlen_zero(call_id) || ast_strlen_zero(phone_local_tag)
-		|| ast_strlen_zero(phone_remote_tag)) {
+		|| ast_strlen_zero(phone_remote_tag)
+		|| ast_strlen_zero(owner_endpoint_id)) {
 		return NULL;
 	}
 
@@ -68,6 +120,28 @@ struct ast_sip_session *cisco_dialog_session_lookup(
 	}
 	session = ast_sip_dialog_get_session(dlg);
 	pjsip_dlg_dec_lock(dlg);
+	if (!session) {
+		return NULL;
+	}
+
+	/* Authorization gate: the matched dialog must belong to the
+	 * requesting endpoint (or a sibling line of the same physical phone).
+	 * pjsip_ua_find_dialog matched on the call-id + tag triple alone,
+	 * which is not secret to other phones; without this an authenticated
+	 * Cisco endpoint could quote a third party's dialogid and record,
+	 * park, tear down, or MCID that party's live call. See the header. */
+	dialog_endpoint_id = session->endpoint
+		? ast_sorcery_object_get_id(session->endpoint) : NULL;
+	if (ast_strlen_zero(dialog_endpoint_id)
+		|| !cisco_same_device(owner_endpoint_id, dialog_endpoint_id)) {
+		ast_debug(1, "cisco: endpoint '%s' tried to act on a dialog owned "
+			"by '%s' (callid=%s) — refusing cross-endpoint dialog "
+			"control\n", owner_endpoint_id,
+			S_OR(dialog_endpoint_id, "(unknown)"), call_id);
+		ao2_cleanup(session);
+		return NULL;
+	}
+
 	return session;
 }
 

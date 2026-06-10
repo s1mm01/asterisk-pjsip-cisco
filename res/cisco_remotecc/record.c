@@ -100,7 +100,7 @@ int handle_record(struct ast_sip_endpoint *endpoint, const char *endpoint_id,
 	}
 
 	session = cisco_dialog_session_lookup(dialog_id->call_id,
-		dialog_id->local_tag, dialog_id->remote_tag);
+		dialog_id->local_tag, dialog_id->remote_tag, endpoint_id);
 	if (!session) {
 		ast_log(LOG_NOTICE,
 			"cisco-remotecc: %s sent %s for unknown dialog (callid=%s)\n",

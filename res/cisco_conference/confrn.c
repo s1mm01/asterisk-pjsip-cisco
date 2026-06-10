@@ -347,9 +347,11 @@ static int conference_send_task(void *obj)
 	struct ast_bridge *conf = NULL;
 
 	session_a = cisco_dialog_session_lookup(data->active_dialog.call_id,
-		data->active_dialog.local_tag, data->active_dialog.remote_tag);
+		data->active_dialog.local_tag, data->active_dialog.remote_tag,
+		endpoint_id);
 	session_b = cisco_dialog_session_lookup(data->consult_dialog.call_id,
-		data->consult_dialog.local_tag, data->consult_dialog.remote_tag);
+		data->consult_dialog.local_tag, data->consult_dialog.remote_tag,
+		endpoint_id);
 	if (!session_a || !session_b) {
 		ast_log(LOG_NOTICE,
 			"cisco-conference: %s pressed Confrn but %s dialog "
@@ -784,7 +786,8 @@ static int join_send_task(void *obj)
 	session_active = cisco_dialog_session_lookup(
 		data->active_dialog.call_id,
 		data->active_dialog.local_tag,
-		data->active_dialog.remote_tag);
+		data->active_dialog.remote_tag,
+		endpoint_id);
 	if (!session_active) {
 		ast_log(LOG_NOTICE,
 			"cisco-conference: %s Join — active call dialog %s not "
@@ -873,7 +876,7 @@ static int join_send_task(void *obj)
 		}
 
 		session_sel = cisco_dialog_session_lookup(sel->call_id,
-			sel->local_tag, sel->remote_tag);
+			sel->local_tag, sel->remote_tag, endpoint_id);
 		if (!session_sel) {
 			ast_log(LOG_NOTICE,
 				"cisco-conference: %s Join — selected dialog %s "
@@ -1059,7 +1062,8 @@ static int rmlastconf_send_task(void *obj)
 	endpoint_id = ast_sorcery_object_get_id(data->endpoint);
 
 	session = cisco_dialog_session_lookup(data->active_dialog.call_id,
-		data->active_dialog.local_tag, data->active_dialog.remote_tag);
+		data->active_dialog.local_tag, data->active_dialog.remote_tag,
+		endpoint_id);
 	if (!session) {
 		ast_log(LOG_NOTICE,
 			"cisco-conference: %s RmLastConf — dialog %s no longer "
